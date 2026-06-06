@@ -3,30 +3,37 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Anime Activity Player</title>
+    <title>Subaru Anime Activity</title>
+    <!-- Tailwind & DaisyUI Prebuilt Open-Source Components -->
     <link href="https://cdn.jsdelivr.net/npm/daisyui@4.7.2/dist/full.min.css" rel="stylesheet" type="text/css" />
     <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Artplayer and HLS Core for streaming .m3u8 manifests -->
     <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
     <script src="https://cdn.jsdelivr.net/npm/artplayer/dist/artplayer.js"></script>
+    <!-- Discord Embedded App SDK -->
     <script src="https://g.embedit.in/discord-embedded-app-sdk-1.0.0.js"></script>
 </head>
 <body class="bg-base-300 text-base-content min-h-screen font-sans">
 
+    <!-- Cold Start Loader Overlay -->
     <div id="loadingOverlay" class="fixed inset-0 bg-base-900 bg-opacity-95 z-50 flex flex-col items-center justify-center space-y-4">
         <span class="loading loading-spinner loading-lg text-primary"></span>
-        <h2 class="text-xl font-bold">Waking up server on Render...</h2>
-        <p class="text-sm text-neutral-content animate-pulse">This may take up to 60 seconds if the backend was sleeping.</p>
+        <h2 class="text-xl font-bold">Waking up Subaru Server...</h2>
+        <p class="text-sm text-neutral-content animate-pulse">This can take up to 60 seconds if the backend was sleeping on the free tier.</p>
     </div>
 
+    <!-- Application Dashboard Layout -->
     <div class="container mx-auto p-4 max-w-5xl">
+        <!-- Header / Search Bar Row -->
         <header class="flex flex-col md:flex-row justify-between items-center mb-6 gap-4 bg-base-200 p-4 rounded-xl shadow-lg">
-            <h1 class="text-2xl font-black text-primary tracking-wider">KLEIN STREAM</h1>
+            <h1 class="text-2xl font-black text-primary tracking-wider">SUBARU STREAM</h1>
             <div class="join w-full md:w-96">
                 <input id="searchInput" type="text" placeholder="Search anime series..." class="input input-bordered join-item w-full bg-base-100" />
                 <button onclick="executeSearch()" class="btn btn-primary join-item">Search</button>
             </div>
         </header>
 
+        <!-- Media Player Container (Hidden until an episode is selected) -->
         <section id="playerSection" class="hidden mb-6 card bg-black overflow-hidden shadow-2xl border border-neutral">
             <div id="videoContainer" class="w-full aspect-video"></div>
             <div class="p-4 bg-base-200 flex justify-between items-center flex-wrap gap-2">
@@ -38,14 +45,18 @@
             </div>
         </section>
 
+        <!-- Dynamic Results Grid & Episode Catalog Space -->
         <main id="contentGrid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
-            </main>
+            <div class="col-span-full text-center py-10 text-neutral-content">
+                Search for an anime series above to start streaming.
+            </div>
+        </main>
     </div>
 
     <script>
-        // CONFIGURATION: Replace with your actual Render URL when deployed
-        const BACKEND_URL = "https://your-app-name.onrender.com";
-        const WS_URL = "wss://your-app-name.onrender.com";
+        // CONFIGURATION: Replace with your actual live URL when your Render instance goes active
+        const BACKEND_URL = "https://your-subaru-app.onrender.com";
+        const WS_URL = "wss://your-subaru-app.onrender.com";
 
         let discordSdk = null;
         let currentUser = { id: "local_dev_user" };
@@ -54,7 +65,7 @@
         let art = null;
         let currentAnimeId = "";
         let currentEpisodeNum = 1;
-        let currentAudioType = "sub"; // Defaults to subbed releases
+        let currentAudioType = "sub"; 
         let currentEpisodeList = [];
         let internalSyncChange = false;
 
@@ -63,30 +74,33 @@
         });
 
         async function initializeAppLifecycle() {
-            // Ping the backend server to see if it's awake before hiding the overlay
+            // Ping the backend server to see if your cron job or explicit load wakes it up
             try {
                 const controller = new AbortController();
-                setTimeout(() => controller.abort(), 65000); // 65-second deadline for Render cold-starts
+                setTimeout(() => controller.abort(), 65000); 
                 await fetch(`${BACKEND_URL}/api/search?q=ping`, { signal: controller.signal }).catch(() => {});
                 document.getElementById('loadingOverlay').classList.add('hidden');
             } catch (err) {
-                console.error("Backend failed to wake up within standard bounds.", err);
+                console.error("Backend took too long to complete its warm-up cycle.", err);
+                document.getElementById('loadingOverlay').classList.add('hidden'); // Fail open for local dev environments
             }
 
-            // Initialize Discord Session Verification
+            // Initialize Discord Session Verification using your App ID
             if (typeof DiscordSDK !== 'undefined') {
                 try {
-                    discordSdk = new DiscordSDK.SDK("YOUR_DISCORD_CLIENT_ID");
+                    discordSdk = new DiscordSDK.SDK("1512914514960449556");
                     await discordSdk.ready();
+                    
                     const auth = await discordSdk.commands.authorize({
-                        client_id: "YOUR_DISCORD_CLIENT_ID",
+                        client_id: "1512914514960449556",
                         scope: ["identify", "guilds.channels.read"],
                     });
+                    
                     const response = await discordSdk.commands.authenticate({ access_token: auth.code });
                     currentUser = response.user;
                     currentRoom = discordSdk.instanceId || "fallback_room";
                 } catch (e) {
-                    console.log("Running app outside of Discord production container context - using local configurations.");
+                    console.log("Not running inside production Discord framework — skipping secure handshake authorization.");
                 }
             }
             initWebSocket();
@@ -109,7 +123,7 @@
                 internalSyncChange = false;
             };
 
-            wsConn.onclose = () => setTimeout(initWebSocket, 3000); // Robust self-healing hook
+            wsConn.onclose = () => setTimeout(initWebSocket, 3000); // Robust dynamic self-healing connection hook
         }
 
         async function executeSearch() {
@@ -123,6 +137,11 @@
                 const data = await res.json();
                 grid.innerHTML = "";
                 
+                if(!data.results || data.results.length === 0) {
+                    grid.innerHTML = `<div class="col-span-full text-center py-10">No titles found matching your search string.</div>`;
+                    return;
+                }
+
                 data.results.forEach(anime => {
                     grid.innerHTML += `
                         <div class="card bg-base-200 shadow-md cursor-pointer hover:scale-105 transition-all" onclick="loadAnimeDetails('${anime.id}')">
@@ -131,7 +150,7 @@
                         </div>`;
                 });
             } catch (err) {
-                grid.innerHTML = `<div class="col-span-full text-error text-center">Search error. Please verify input syntax.</div>`;
+                grid.innerHTML = `<div class="col-span-full text-error text-center">Search compilation connection failure. Check backend route states.</div>`;
             }
         }
 
@@ -145,7 +164,7 @@
                 const data = await res.json();
                 currentEpisodeList = data.episodes;
                 
-                // Fetch context record for 'Continue Watching' values
+                // Query watch progress metadata matching context keys
                 const historyRes = await fetch(`${BACKEND_URL}/api/history/get?user_id=${currentUser.id}&anime_id=${animeId}`);
                 const historyData = await historyRes.json();
                 
@@ -154,7 +173,7 @@
                 
                 renderEpisodeCatalog(historyData.progress_seconds);
             } catch (err) {
-                grid.innerHTML = `<div class="col-span-full text-error text-center">Failed to fetch episode mapping lists.</div>`;
+                grid.innerHTML = `<div class="col-span-full text-error text-center">Failed to unpack individual show mapping details.</div>`;
             }
         }
 
@@ -166,6 +185,11 @@
                     <h2 class="text-xl font-bold mt-2">Select Episode</h2>
                 </div>`;
             
+            if(!currentEpisodeList || currentEpisodeList.length === 0) {
+                grid.innerHTML += `<div class="col-span-full text-warning">No indexed episodes are currently available.</div>`;
+                return;
+            }
+
             currentEpisodeList.forEach(ep => {
                 const isCurrent = ep.number === currentEpisodeNum;
                 grid.innerHTML += `
@@ -186,11 +210,11 @@
                 const res = await fetch(`${BACKEND_URL}/api/stream/${episodeId}`);
                 const data = await res.json();
                 
-                // Select default source from response array payload safely
+                // Fall back securely if explicit quality keys aren't explicitly flagged
                 const source = data.sources.find(s => s.quality === "default") || data.sources[0];
                 setupVideoPlayer(source.url, startTime);
             } catch (err) {
-                alert("Error extracting stream configurations. The target mirror could be down.");
+                alert("Playback tracking parameters dropped by server stream decryption layers.");
             }
         }
 
@@ -221,7 +245,7 @@
             art.on('ready', () => {
                 if (startTime > 0) art.currentTime = startTime;
                 
-                // Setup synchronization triggers across room connections
+                // Action triggers for WebSocket party synchronization
                 art.on('play', () => {
                     if (!internalSyncChange) wsConn.send(JSON.stringify({ action: "play" }));
                 });
@@ -232,7 +256,7 @@
                     if (!internalSyncChange) wsConn.send(JSON.stringify({ action: "seek", time }));
                 });
 
-                // Auto-save history every 10 seconds to database endpoints
+                // Auto-sync history parameters to external engines every 10 seconds
                 setInterval(() => {
                     if (art && art.playing) {
                         fetch(`${BACKEND_URL}/api/history/save`, {
@@ -255,7 +279,6 @@
             currentAudioType = currentAudioType === "sub" ? "dub" : "sub";
             document.getElementById('toggleSubDub').innerText = currentAudioType.toUpperCase();
             
-            // Re-find target node based on language key formatting rules
             const targetEp = currentEpisodeList.find(ep => ep.number === currentEpisodeNum);
             if (targetEp) {
                 launchStream(targetEp.id, currentEpisodeNum, art ? art.currentTime : 0);
