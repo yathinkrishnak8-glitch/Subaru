@@ -3,19 +3,17 @@ import sqlite3
 import httpx
 from contextlib import contextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # ==========================================
 # 1. DATABASE CONFIGURATION & INITIALIZATION
 # ==========================================
-# Fix for Render Free Tier: Fallback to local SQLite only during local testing,
-# otherwise use a cloud-hosted Postgres instance (like Neon/Supabase) to persist history.
 DATABASE_URL = os.environ.get("DATABASE_URL", "subaru_activity.db")
 IS_POSTGRES = DATABASE_URL.startswith("postgres://") or DATABASE_URL.startswith("postgresql://")
 
 def init_db():
-    """Initializes schema tables with fallback logic depending on database engine."""
     if IS_POSTGRES:
         import psycopg2
         conn = psycopg2.connect(DATABASE_URL)
@@ -50,7 +48,6 @@ def init_db():
 
 @contextmanager
 def get_db_cursor():
-    """Context manager ensuring safe transaction rollbacks and connection closures."""
     if IS_POSTGRES:
         import psycopg2
         conn = psycopg2.connect(DATABASE_URL)
@@ -134,7 +131,6 @@ app.add_middleware(
 async def startup_event():
     init_db()
 
-# Consumet open-source scraping endpoint mapping
 ANIME_API_BASE = "https://api.consumet.org/anime/gogoanime"
 
 class ProgressPayload(BaseModel):
@@ -145,17 +141,30 @@ class ProgressPayload(BaseModel):
     progress_seconds: float
 
 # ==========================================
-# 3. ENDPOINTS (CRON, API, & HISTORY)
+# 3. ENDPOINTS & FRONTEND SERVING
 # ==========================================
+
+@app.get("/")
+async def serve_frontend():
+    """Serves the index.html file to Discord's iframe when the root URL is accessed."""
+    try:
+        # Looking for index.html in the exact same location as main.py
+        with open("index.html", "r", encoding="utf-8") as file:
+            return HTMLResponse(content=file.read(), status_code=200)
+    except FileNotFoundError:
+        return HTMLResponse(
+            content="<h1>Error: index.html missing!</h1><p>Make sure index.html is uploaded directly next to your main.py file.</p>", 
+            status_code=404
+        )
 
 @app.get("/api/health")
 async def health_check():
-    """Target endpoint for your cloud cron job (e.g., cron-job.org) to prevent sleeping."""
+    """Target endpoint for your cloud cron job to prevent sleeping."""
     return {"status": "healthy", "service": "subaru-stream", "database_engine": "postgres" if IS_POSTGRES else "sqlite"}
 
 @app.get("/api/search")
 async def search_anime(q: str):
-    if not q or q == "ping":  # Handle app-wakeup queries gracefully
+    if not q or q == "ping":
         return {"status": "active"}
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
