@@ -142,12 +142,12 @@ class ProgressPayload(BaseModel):
 # 3. ENDPOINTS, FALLBACKS & FRONTEND SERVING
 # ==========================================
 
-# A list of active community mirrors. The backend will self-heal by routing 
-# through these if the primary scraper goes down.
+# Swapped to the Meta AniList routing. This prevents direct IP bans 
+# from single providers by routing searches through the AniList database first.
 API_MIRRORS = [
-    "https://api-consumet.vercel.app/anime/gogoanime",
-    "https://consumet-api.onrender.com/anime/gogoanime",
-    "https://api.consumet.org/anime/gogoanime"
+    "https://api-consumet.vercel.app/meta/anilist",
+    "https://consumet-api.onrender.com/meta/anilist",
+    "https://api.consumet.org/meta/anilist"
 ]
 
 async def fetch_from_mirrors(endpoint: str):
@@ -160,21 +160,16 @@ async def fetch_from_mirrors(endpoint: str):
                 
                 if response.status_code == 200:
                     data = response.json()
-                    # If the API is rate-limited, it returns an empty results list. 
-                    # We catch that and force it to try the next mirror.
                     if "results" in data and len(data["results"]) == 0:
                         continue
                     return data
             except Exception:
-                # If a mirror is completely dead, skip it and keep going
                 continue
                 
-    # If the loop exhausts all mirrors without success
     raise HTTPException(status_code=502, detail="All extraction mirrors are currently blocked or rate-limited.")
 
 @app.get("/")
 async def serve_frontend():
-    """Serves the index.html file to Discord's iframe when the root URL is accessed."""
     try:
         with open("index.html", "r", encoding="utf-8") as file:
             return HTMLResponse(content=file.read(), status_code=200)
@@ -192,14 +187,17 @@ async def health_check():
 async def search_anime(q: str):
     if not q or q == "ping":
         return {"status": "active"}
+    # AniList uses standard query routing for search
     return await fetch_from_mirrors(f"/{q}")
 
 @app.get("/api/anime/{anime_id}")
 async def get_anime_details(anime_id: str):
+    # AniList requires 'info/' prefix
     return await fetch_from_mirrors(f"/info/{anime_id}")
 
 @app.get("/api/stream/{episode_id}")
 async def get_stream_urls(episode_id: str):
+    # AniList requires 'watch/' prefix
     return await fetch_from_mirrors(f"/watch/{episode_id}")
 
 @app.post("/api/history/save")
@@ -238,7 +236,7 @@ class RoomManager:
                     try:
                         await connection.send_json(message)
                     except Exception:
-                        pass # Ignore connections that dropped mid-broadcast
+                        pass 
 
 manager = RoomManager()
 
