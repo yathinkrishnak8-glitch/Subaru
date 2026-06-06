@@ -131,8 +131,6 @@ app.add_middleware(
 async def startup_event():
     init_db()
 
-ANIME_API_BASE = "https://api.consumet.org/anime/gogoanime"
-
 class ProgressPayload(BaseModel):
     user_id: str
     anime_id: str
@@ -141,14 +139,43 @@ class ProgressPayload(BaseModel):
     progress_seconds: float
 
 # ==========================================
-# 3. ENDPOINTS & FRONTEND SERVING
+# 3. ENDPOINTS, FALLBACKS & FRONTEND SERVING
 # ==========================================
+
+# A list of active community mirrors. The backend will self-heal by routing 
+# through these if the primary scraper goes down.
+API_MIRRORS = [
+    "https://api-consumet.vercel.app/anime/gogoanime",
+    "https://consumet-api.onrender.com/anime/gogoanime",
+    "https://api.consumet.org/anime/gogoanime"
+]
+
+async def fetch_from_mirrors(endpoint: str):
+    """Iterates through API mirrors until a valid, populated response is secured."""
+    async with httpx.AsyncClient(timeout=8.0) as client:
+        for base_url in API_MIRRORS:
+            try:
+                url = f"{base_url}{endpoint}"
+                response = await client.get(url)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    # If the API is rate-limited, it returns an empty results list. 
+                    # We catch that and force it to try the next mirror.
+                    if "results" in data and len(data["results"]) == 0:
+                        continue
+                    return data
+            except Exception:
+                # If a mirror is completely dead, skip it and keep going
+                continue
+                
+    # If the loop exhausts all mirrors without success
+    raise HTTPException(status_code=502, detail="All extraction mirrors are currently blocked or rate-limited.")
 
 @app.get("/")
 async def serve_frontend():
     """Serves the index.html file to Discord's iframe when the root URL is accessed."""
     try:
-        # Looking for index.html in the exact same location as main.py
         with open("index.html", "r", encoding="utf-8") as file:
             return HTMLResponse(content=file.read(), status_code=200)
     except FileNotFoundError:
@@ -159,37 +186,21 @@ async def serve_frontend():
 
 @app.get("/api/health")
 async def health_check():
-    """Target endpoint for your cloud cron job to prevent sleeping."""
     return {"status": "healthy", "service": "subaru-stream", "database_engine": "postgres" if IS_POSTGRES else "sqlite"}
 
 @app.get("/api/search")
 async def search_anime(q: str):
     if not q or q == "ping":
         return {"status": "active"}
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            response = await client.get(f"{ANIME_API_BASE}/{q}")
-            return response.json()
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Scraper upstream fault: {str(e)}")
+    return await fetch_from_mirrors(f"/{q}")
 
 @app.get("/api/anime/{anime_id}")
 async def get_anime_details(anime_id: str):
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            response = await client.get(f"{ANIME_API_BASE}/info/{anime_id}")
-            return response.json()
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Upstream information mapping failure: {str(e)}")
+    return await fetch_from_mirrors(f"/info/{anime_id}")
 
 @app.get("/api/stream/{episode_id}")
 async def get_stream_urls(episode_id: str):
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        try:
-            response = await client.get(f"{ANIME_API_BASE}/watch/{episode_id}")
-            return response.json()
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Failed to resolve streaming links: {str(e)}")
+    return await fetch_from_mirrors(f"/watch/{episode_id}")
 
 @app.post("/api/history/save")
 async def save_user_history(data: ProgressPayload):
