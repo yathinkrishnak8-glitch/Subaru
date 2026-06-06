@@ -1,244 +1,289 @@
-import os
-import sqlite3
-import httpx
-from contextlib import contextmanager
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi.responses import HTMLResponse
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Subaru Anime Activity</title>
+    <!-- Tailwind & DaisyUI Prebuilt Open-Source Components -->
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@4.7.2/dist/full.min.css" rel="stylesheet" type="text/css" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Artplayer and HLS Core for streaming .m3u8 manifests -->
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <script src="https://cdn.jsdelivr.net/npm/artplayer/dist/artplayer.js"></script>
+    <!-- Discord Embedded App SDK -->
+    <script src="https://g.embedit.in/discord-embedded-app-sdk-1.0.0.js"></script>
+</head>
+<body class="bg-base-300 text-base-content min-h-screen font-sans">
 
-# ==========================================
-# 1. DATABASE CONFIGURATION & INITIALIZATION
-# ==========================================
-DATABASE_URL = os.environ.get("DATABASE_URL", "subaru_activity.db")
-IS_POSTGRES = DATABASE_URL.startswith("postgres://") or DATABASE_URL.startswith("postgresql://")
+    <!-- Cold Start Loader Overlay -->
+    <div id="loadingOverlay" class="fixed inset-0 bg-base-900 bg-opacity-95 z-50 flex flex-col items-center justify-center space-y-4">
+        <span class="loading loading-spinner loading-lg text-primary"></span>
+        <h2 class="text-xl font-bold">Waking up Subaru Server...</h2>
+        <p class="text-sm text-neutral-content animate-pulse">This can take up to 60 seconds if the backend was sleeping on the free tier.</p>
+    </div>
 
-def init_db():
-    if IS_POSTGRES:
-        import psycopg2
-        conn = psycopg2.connect(DATABASE_URL)
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS watch_history (
-                user_id VARCHAR(64),
-                anime_id VARCHAR(255),
-                episode_num INT,
-                sub_or_dub VARCHAR(10),
-                progress_seconds FLOAT,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (user_id, anime_id)
-            );
-        """)
-    else:
-        conn = sqlite3.connect(DATABASE_URL)
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS watch_history (
-                user_id TEXT,
-                anime_id TEXT,
-                episode_num INTEGER,
-                sub_or_dub TEXT,
-                progress_seconds REAL,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (user_id, anime_id)
-            );
-        """)
-    conn.commit()
-    conn.close()
+    <!-- Application Dashboard Layout -->
+    <div class="container mx-auto p-4 max-w-5xl">
+        <!-- Header / Search Bar Row -->
+        <header class="flex flex-col md:flex-row justify-between items-center mb-6 gap-4 bg-base-200 p-4 rounded-xl shadow-lg">
+            <h1 class="text-2xl font-black text-primary tracking-wider">SUBARU STREAM</h1>
+            <div class="join w-full md:w-96">
+                <input id="searchInput" type="text" placeholder="Search anime series..." class="input input-bordered join-item w-full bg-base-100" />
+                <button onclick="executeSearch()" class="btn btn-primary join-item">Search</button>
+            </div>
+        </header>
 
-@contextmanager
-def get_db_cursor():
-    if IS_POSTGRES:
-        import psycopg2
-        conn = psycopg2.connect(DATABASE_URL)
-        cursor = conn.cursor()
-        try:
-            yield cursor
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            raise e
-        finally:
-            cursor.close()
-            conn.close()
-    else:
-        conn = sqlite3.connect(DATABASE_URL)
-        cursor = conn.cursor()
-        try:
-            yield cursor
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            raise e
-        finally:
-            cursor.close()
-            conn.close()
+        <!-- Media Player Container (Hidden until an episode is selected) -->
+        <section id="playerSection" class="hidden mb-6 card bg-black overflow-hidden shadow-2xl border border-neutral">
+            <div id="videoContainer" class="w-full aspect-video"></div>
+            <div class="p-4 bg-base-200 flex justify-between items-center flex-wrap gap-2">
+                <h3 id="playingTitle" class="font-bold text-lg text-neutral-content">Loading episode...</h3>
+                <div class="flex items-center space-x-3">
+                    <span class="text-sm font-semibold">Audio Variant:</span>
+                    <button id="toggleSubDub" onclick="switchAudioType()" class="btn btn-sm btn-outline btn-secondary">SUB</button>
+                </div>
+            </div>
+        </section>
 
-def save_progress(user_id: str, anime_id: str, episode_num: int, sub_or_dub: str, progress: float):
-    try:
-        with get_db_cursor() as cursor:
-            if IS_POSTGRES:
-                cursor.execute("""
-                    INSERT INTO watch_history (user_id, anime_id, episode_num, sub_or_dub, progress_seconds, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-                    ON CONFLICT (user_id, anime_id) 
-                    DO UPDATE SET episode_num = EXCLUDED.episode_num, 
-                                  sub_or_dub = EXCLUDED.sub_or_dub, 
-                                  progress_seconds = EXCLUDED.progress_seconds,
-                                  updated_at = CURRENT_TIMESTAMP;
-                """, (user_id, anime_id, episode_num, sub_or_dub, progress))
-            else:
-                cursor.execute("""
-                    INSERT INTO watch_history (user_id, anime_id, episode_num, sub_or_dub, progress_seconds, updated_at)
-                    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                    ON CONFLICT(user_id, anime_id) 
-                    DO UPDATE SET episode_num=excluded.episode_num, 
-                                  sub_or_dub=excluded.sub_or_dub, 
-                                  progress_seconds=excluded.progress_seconds,
-                                  updated_at=CURRENT_TIMESTAMP;
-                """, (user_id, anime_id, episode_num, sub_or_dub, progress))
-    except Exception as e:
-        print(f"[Subaru Database Error] Failed to commit history record: {e}")
+        <!-- Dynamic Results Grid & Episode Catalog Space -->
+        <main id="contentGrid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+            <div class="col-span-full text-center py-10 text-neutral-content">
+                Search for an anime series above to start streaming.
+            </div>
+        </main>
+    </div>
 
-def get_progress(user_id: str, anime_id: str):
-    try:
-        with get_db_cursor() as cursor:
-            if IS_POSTGRES:
-                cursor.execute("SELECT episode_num, sub_or_dub, progress_seconds FROM watch_history WHERE user_id = %s AND anime_id = %s", (user_id, anime_id))
-            else:
-                cursor.execute("SELECT episode_num, sub_or_dub, progress_seconds FROM watch_history WHERE user_id = ? AND anime_id = ?", (user_id, anime_id))
-            row = cursor.fetchone()
-            if row:
-                return {"episode_num": row[0], "sub_or_dub": row[1], "progress_seconds": row[2]}
-    except Exception as e:
-        print(f"[Subaru Database Error] History retrieval failure: {e}")
-    return {"episode_num": 1, "sub_or_dub": "sub", "progress_seconds": 0.0}
+    <script>
+        // CONFIGURATION: Replace with your actual live URL when your Render instance goes active
+        const BACKEND_URL = "https://your-subaru-app.onrender.com";
+        const WS_URL = "wss://your-subaru-app.onrender.com";
 
-# ==========================================
-# 2. FASTAPI WEB SERVER CORE
-# ==========================================
-app = FastAPI(title="Subaru Streaming Activity Backend")
+        let discordSdk = null;
+        let currentUser = { id: "local_dev_user" };
+        let currentRoom = "local_dev_room";
+        let wsConn = null;
+        let art = null;
+        let currentAnimeId = "";
+        let currentEpisodeNum = 1;
+        let currentAudioType = "sub"; 
+        let currentEpisodeList = [];
+        let internalSyncChange = false;
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+        window.addEventListener('DOMContentLoaded', async () => {
+            await initializeAppLifecycle();
+        });
 
-@app.on_event("startup")
-async def startup_event():
-    init_db()
+        async function initializeAppLifecycle() {
+            // Ping the backend server to see if your cron job or explicit load wakes it up
+            try {
+                const controller = new AbortController();
+                setTimeout(() => controller.abort(), 65000); 
+                await fetch(`${BACKEND_URL}/api/search?q=ping`, { signal: controller.signal }).catch(() => {});
+                document.getElementById('loadingOverlay').classList.add('hidden');
+            } catch (err) {
+                console.error("Backend took too long to complete its warm-up cycle.", err);
+                document.getElementById('loadingOverlay').classList.add('hidden'); // Fail open for local dev environments
+            }
 
-ANIME_API_BASE = "https://api.consumet.org/anime/gogoanime"
+            // Initialize Discord Session Verification using your App ID
+            if (typeof DiscordSDK !== 'undefined') {
+                try {
+                    discordSdk = new DiscordSDK.SDK("1512914514960449556");
+                    await discordSdk.ready();
+                    
+                    const auth = await discordSdk.commands.authorize({
+                        client_id: "1512914514960449556",
+                        scope: ["identify", "guilds.channels.read"],
+                    });
+                    
+                    const response = await discordSdk.commands.authenticate({ access_token: auth.code });
+                    currentUser = response.user;
+                    currentRoom = discordSdk.instanceId || "fallback_room";
+                } catch (e) {
+                    console.log("Not running inside production Discord framework — skipping secure handshake authorization.");
+                }
+            }
+            initWebSocket();
+        }
 
-class ProgressPayload(BaseModel):
-    user_id: str
-    anime_id: str
-    episode_num: int
-    sub_or_dub: str
-    progress_seconds: float
+        function initWebSocket() {
+            wsConn = new WebSocket(`${WS_URL}/ws/${currentRoom}`);
+            wsConn.onmessage = (event) => {
+                const msg = JSON.parse(event.data);
+                if (!art) return;
 
-# ==========================================
-# 3. ENDPOINTS & FRONTEND SERVING
-# ==========================================
+                internalSyncChange = true; 
+                if (msg.action === "pause" && art.playing) {
+                    art.pause();
+                } else if (msg.action === "play" && !art.playing) {
+                    art.play();
+                } else if (msg.action === "seek" && Math.abs(art.currentTime - msg.time) > 2) {
+                    art.currentTime = msg.time;
+                }
+                internalSyncChange = false;
+            };
 
-@app.get("/")
-async def serve_frontend():
-    """Serves the index.html file to Discord's iframe when the root URL is accessed."""
-    try:
-        # Looking for index.html in the exact same location as main.py
-        with open("index.html", "r", encoding="utf-8") as file:
-            return HTMLResponse(content=file.read(), status_code=200)
-    except FileNotFoundError:
-        return HTMLResponse(
-            content="<h1>Error: index.html missing!</h1><p>Make sure index.html is uploaded directly next to your main.py file.</p>", 
-            status_code=404
-        )
+            wsConn.onclose = () => setTimeout(initWebSocket, 3000); // Robust dynamic self-healing connection hook
+        }
 
-@app.get("/api/health")
-async def health_check():
-    """Target endpoint for your cloud cron job to prevent sleeping."""
-    return {"status": "healthy", "service": "subaru-stream", "database_engine": "postgres" if IS_POSTGRES else "sqlite"}
+        async function executeSearch() {
+            const query = document.getElementById('searchInput').value;
+            if (!query) return;
+            const grid = document.getElementById('contentGrid');
+            grid.innerHTML = `<div class="col-span-full text-center py-10"><span class="loading loading-bars loading-lg text-primary"></span></div>`;
+            
+            try {
+                const res = await fetch(`${BACKEND_URL}/api/search?q=${encodeURIComponent(query)}`);
+                const data = await res.json();
+                grid.innerHTML = "";
+                
+                if(!data.results || data.results.length === 0) {
+                    grid.innerHTML = `<div class="col-span-full text-center py-10">No titles found matching your search string.</div>`;
+                    return;
+                }
 
-@app.get("/api/search")
-async def search_anime(q: str):
-    if not q or q == "ping":
-        return {"status": "active"}
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            response = await client.get(f"{ANIME_API_BASE}/{q}")
-            return response.json()
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Scraper upstream fault: {str(e)}")
+                data.results.forEach(anime => {
+                    grid.innerHTML += `
+                        <div class="card bg-base-200 shadow-md cursor-pointer hover:scale-105 transition-all" onclick="loadAnimeDetails('${anime.id}')">
+                            <figure class="px-2 pt-2"><img src="${anime.image}" class="rounded-lg object-cover h-48 w-full" /></figure>
+                            <div class="card-body p-3"><h2 class="card-title text-sm line-clamp-2">${anime.title}</h2></div>
+                        </div>`;
+                });
+            } catch (err) {
+                grid.innerHTML = `<div class="col-span-full text-error text-center">Search compilation connection failure. Check backend route states.</div>`;
+            }
+        }
 
-@app.get("/api/anime/{anime_id}")
-async def get_anime_details(anime_id: str):
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            response = await client.get(f"{ANIME_API_BASE}/info/{anime_id}")
-            return response.json()
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Upstream information mapping failure: {str(e)}")
+        async function loadAnimeDetails(animeId) {
+            currentAnimeId = animeId;
+            const grid = document.getElementById('contentGrid');
+            grid.innerHTML = `<div class="col-span-full text-center py-10"><span class="loading loading-ring loading-lg text-secondary"></span></div>`;
+            
+            try {
+                const res = await fetch(`${BACKEND_URL}/api/anime/${animeId}`);
+                const data = await res.json();
+                currentEpisodeList = data.episodes;
+                
+                // Query watch progress metadata matching context keys
+                const historyRes = await fetch(`${BACKEND_URL}/api/history/get?user_id=${currentUser.id}&anime_id=${animeId}`);
+                const historyData = await historyRes.json();
+                
+                currentEpisodeNum = historyData.episode_num;
+                currentAudioType = historyData.sub_or_dub;
+                
+                renderEpisodeCatalog(historyData.progress_seconds);
+            } catch (err) {
+                grid.innerHTML = `<div class="col-span-full text-error text-center">Failed to unpack individual show mapping details.</div>`;
+            }
+        }
 
-@app.get("/api/stream/{episode_id}")
-async def get_stream_urls(episode_id: str):
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        try:
-            response = await client.get(f"{ANIME_API_BASE}/watch/{episode_id}")
-            return response.json()
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Failed to resolve streaming links: {str(e)}")
+        function renderEpisodeCatalog(resumeSeconds = 0) {
+            const grid = document.getElementById('contentGrid');
+            grid.innerHTML = `
+                <div class="col-span-full mb-4">
+                    <button onclick="location.reload()" class="btn btn-sm btn-neutral">← Back to Search</button>
+                    <h2 class="text-xl font-bold mt-2">Select Episode</h2>
+                </div>`;
+            
+            if(!currentEpisodeList || currentEpisodeList.length === 0) {
+                grid.innerHTML += `<div class="col-span-full text-warning">No indexed episodes are currently available.</div>`;
+                return;
+            }
 
-@app.post("/api/history/save")
-async def save_user_history(data: ProgressPayload):
-    save_progress(data.user_id, data.anime_id, data.episode_num, data.sub_or_dub, data.progress_seconds)
-    return {"status": "saved"}
+            currentEpisodeList.forEach(ep => {
+                const isCurrent = ep.number === currentEpisodeNum;
+                grid.innerHTML += `
+                    <button class="btn ${isCurrent ? 'btn-primary' : 'btn-outline'} m-1" onclick="launchStream('${ep.id}', ${ep.number}, ${isCurrent ? resumeSeconds : 0})">
+                        Ep ${ep.number}
+                    </button>`;
+            });
+        }
 
-@app.get("/api/history/get")
-async def get_user_history(user_id: str, anime_id: str):
-    return get_progress(user_id, anime_id)
+        async function launchStream(episodeId, episodeNum, startTime = 0) {
+            currentEpisodeNum = episodeNum;
+            document.getElementById('playerSection').classList.remove('hidden');
+            document.getElementById('playingTitle').innerText = `Playing Episode ${episodeNum}`;
+            document.getElementById('toggleSubDub').innerText = currentAudioType.toUpperCase();
+            window.scrollTo({ top: 0, behavior: 'smooth' });
 
-# ==========================================
-# 4. WEBSOCKET PARTY SYNC WORKER
-# ==========================================
-class RoomManager:
-    def __init__(self):
-        self.active_rooms: dict[str, list[WebSocket]] = {}
+            try {
+                const res = await fetch(`${BACKEND_URL}/api/stream/${episodeId}`);
+                const data = await res.json();
+                
+                // Fall back securely if explicit quality keys aren't explicitly flagged
+                const source = data.sources.find(s => s.quality === "default") || data.sources[0];
+                setupVideoPlayer(source.url, startTime);
+            } catch (err) {
+                alert("Playback tracking parameters dropped by server stream decryption layers.");
+            }
+        }
 
-    async def connect(self, websocket: WebSocket, room_id: str):
-        await websocket.accept()
-        if room_id not in self.active_rooms:
-            self.active_rooms[room_id] = []
-        self.active_rooms[room_id].append(websocket)
+        function setupVideoPlayer(streamUrl, startTime) {
+            if (art) art.destroy();
 
-    def disconnect(self, websocket: WebSocket, room_id: str):
-        if room_id in self.active_rooms:
-            if websocket in self.active_rooms[room_id]:
-                self.active_rooms[room_id].remove(websocket)
-            if not self.active_rooms[room_id]:
-                del self.active_rooms[room_id]
+            art = new Artplayer({
+                container: '#videoContainer',
+                url: streamUrl,
+                type: 'm3u8',
+                customPlaybackRate: [0.5, 1, 1.5, 2],
+                autoSize: true,
+                fullscreen: true,
+                airplay: true,
+                customType: {
+                    m3u8: function (video, url) {
+                        if (Hls.isSupported()) {
+                            const hls = new Hls();
+                            hls.loadSource(url);
+                            hls.attachMedia(video);
+                        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                            video.src = url;
+                        }
+                    },
+                },
+            });
 
-    async def broadcast(self, message: dict, room_id: str, sender: WebSocket):
-        if room_id in self.active_rooms:
-            for connection in self.active_rooms[room_id]:
-                if connection != sender:
-                    try:
-                        await connection.send_json(message)
-                    except Exception:
-                        pass # Ignore connections that dropped mid-broadcast
+            art.on('ready', () => {
+                if (startTime > 0) art.currentTime = startTime;
+                
+                // Action triggers for WebSocket party synchronization
+                art.on('play', () => {
+                    if (!internalSyncChange) wsConn.send(JSON.stringify({ action: "play" }));
+                });
+                art.on('pause', () => {
+                    if (!internalSyncChange) wsConn.send(JSON.stringify({ action: "pause" }));
+                });
+                art.on('seek', (time) => {
+                    if (!internalSyncChange) wsConn.send(JSON.stringify({ action: "seek", time }));
+                });
 
-manager = RoomManager()
+                // Auto-sync history parameters to external engines every 10 seconds
+                setInterval(() => {
+                    if (art && art.playing) {
+                        fetch(`${BACKEND_URL}/api/history/save`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                user_id: currentUser.id,
+                                anime_id: currentAnimeId,
+                                episode_num: currentEpisodeNum,
+                                sub_or_dub: currentAudioType,
+                                progress_seconds: art.currentTime
+                            })
+                        }).catch(() => {});
+                    }
+                }, 10000);
+            });
+        }
 
-@app.websocket("/ws/{room_id}")
-async def websocket_endpoint(websocket: WebSocket, room_id: str):
-    await manager.connect(websocket, room_id)
-    try:
-        while True:
-            data = await websocket.receive_json()
-            await manager.broadcast(data, room_id, sender=websocket)
-    except WebSocketDisconnect:
-        manager.disconnect(websocket, room_id)
-    except Exception:
-        manager.disconnect(websocket, room_id)
+        function switchAudioType() {
+            currentAudioType = currentAudioType === "sub" ? "dub" : "sub";
+            document.getElementById('toggleSubDub').innerText = currentAudioType.toUpperCase();
+            
+            const targetEp = currentEpisodeList.find(ep => ep.number === currentEpisodeNum);
+            if (targetEp) {
+                launchStream(targetEp.id, currentEpisodeNum, art ? art.currentTime : 0);
+            }
+        }
+    </script>
+</body>
+</html>
