@@ -6,47 +6,69 @@
     <title>Stream</title>
     <link href="https://cdn.jsdelivr.net/npm/daisyui@4.7.2/dist/full.min.css" rel="stylesheet" type="text/css" />
     <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
     <script src="https://cdn.jsdelivr.net/npm/artplayer/dist/artplayer.js"></script>
     <script src="https://g.embedit.in/discord-embedded-app-sdk-1.0.0.js"></script>
 </head>
-<body class="bg-base-300 text-base-content min-h-screen font-sans">
+<body class="bg-base-300 text-base-content min-h-screen font-sans antialiased selection:bg-primary selection:text-primary-content">
 
     <div id="loadingOverlay" class="fixed inset-0 bg-base-900 bg-opacity-95 z-50 flex flex-col items-center justify-center space-y-4">
-        <span class="loading loading-spinner loading-lg text-primary"></span>
-        <h2 class="text-xl font-bold">Waking up Subaru Server...</h2>
-        <p class="text-sm text-neutral-content animate-pulse">This can take up to 60 seconds if the backend was sleeping on the free tier.</p>
+        <div class="relative w-20 h-20 flex items-center justify-center">
+            <span class="loading loading-ring loading-lg text-primary absolute scale-150"></span>
+            <i class="fa-solid fa-play text-2xl text-primary animate-pulse"></i>
+        </div>
+        <h2 class="text-xl font-black tracking-widest text-white uppercase mt-4">Waking Subaru Backend</h2>
+        <p class="text-xs text-neutral-content opacity-70 animate-pulse">Warming cloud container instances... This can take up to 60s.</p>
     </div>
 
-    <div class="container mx-auto p-4 max-w-5xl">
-        <header class="flex flex-col md:flex-row justify-between items-center mb-6 gap-4 bg-base-200 p-4 rounded-xl shadow-lg">
-            <h1 class="text-2xl font-black text-primary tracking-wider">SUBARU STREAM</h1>
-            <div class="join w-full md:w-96">
-                <input id="searchInput" type="text" placeholder="Search anime series..." class="input input-bordered join-item w-full bg-base-100" />
-                <button onclick="executeSearch()" class="btn btn-primary join-item">Search</button>
+    <div class="navbar bg-base-200 border-b border-base-100 px-4 md:px-8 sticky top-0 z-40 shadow-md backdrop-blur-md bg-opacity-90">
+        <div class="flex-1">
+            <a class="btn btn-ghost text-xl font-black tracking-tighter text-primary normal-case gap-2" onclick="location.reload()">
+                <i class="fa-solid fa-circle-play text-primary"></i> STREAM
+            </a>
+        </div>
+        <div class="flex-none gap-3 w-full max-w-xs md:max-w-md">
+            <div class="join w-full shadow-inner">
+                <input id="searchInput" type="text" placeholder="Search anime title..." class="input input-bordered bg-base-100 join-item w-full focus:outline-none focus:border-primary text-sm font-medium" onkeyup="if(event.key === 'Enter') executeSearch()" />
+                <button onclick="executeSearch()" class="btn btn-primary join-item px-6">
+                    <i class="fa-solid fa-magnifying-glass"></i>
+                </button>
             </div>
-        </header>
+        </div>
+    </div>
 
-        <section id="playerSection" class="hidden mb-6 card bg-black overflow-hidden shadow-2xl border border-neutral">
-            <div id="videoContainer" class="w-full aspect-video"></div>
-            <div class="p-4 bg-base-200 flex justify-between items-center flex-wrap gap-2">
-                <h3 id="playingTitle" class="font-bold text-lg text-neutral-content">Loading episode...</h3>
-                <div class="flex items-center space-x-3">
-                    <span class="text-sm font-semibold">Audio Variant:</span>
-                    <button id="toggleSubDub" onclick="switchAudioType()" class="btn btn-sm btn-outline btn-secondary">SUB</button>
+    <div class="container mx-auto p-4 md:p-8 max-w-6xl">
+        
+        <section id="playerSection" class="hidden mb-8 card bg-black overflow-hidden shadow-2xl border border-neutral/40 rounded-2xl">
+            <div id="videoContainer" class="w-full aspect-video bg-neutral-900"></div>
+            <div class="p-5 bg-base-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                <div>
+                    <span class="badge badge-primary badge-sm font-bold tracking-wider mb-1 uppercase">Now Streaming</span>
+                    <h3 id="playingTitle" class="font-extrabold text-lg text-white tracking-tight">Loading episode metrics...</h3>
+                </div>
+                <div class="flex items-center gap-3 bg-base-100 p-2 rounded-xl border border-base-300">
+                    <span class="text-xs font-bold uppercase tracking-wider px-2 text-neutral-content">Audio Mode</span>
+                    <button id="toggleSubDub" onclick="switchAudioType()" class="btn btn-xs btn-primary font-black px-4">SUB</button>
                 </div>
             </div>
         </section>
 
-        <main id="contentGrid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
-            <div class="col-span-full text-center py-10 text-neutral-content">
-                Search for an anime series above to start streaming.
+        <div class="flex justify-between items-center mb-6" id="sectionHeaderContainer">
+            <h2 id="sectionTitle" class="text-lg font-bold tracking-tight uppercase border-l-4 border-primary pl-3 text-white">Discover Media</h2>
+        </div>
+
+        <main id="contentGrid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-6">
+            <div class="col-span-full text-center py-20 bg-base-200 rounded-2xl border-2 border-dashed border-base-100 p-6 shadow-inner">
+                <i class="fa-solid fa-clapperboard text-5xl mb-4 text-neutral/40"></i>
+                <h3 class="text-md font-bold text-neutral-content">Your Catalog is Ready</h3>
+                <p class="text-xs text-neutral-content/60 mt-1 max-w-xs mx-auto">Use the master search bar at the top right to discover show indices via the AniList engine.</p>
             </div>
         </main>
     </div>
 
     <script>
-        // LIVE CONFIGURATION
+        // LIVE PRODUCTION ROUTING STRATEGY
         const BACKEND_URL = "https://subaru-my7g.onrender.com";
         const WS_URL = "wss://subaru-my7g.onrender.com";
 
@@ -66,33 +88,29 @@
         });
 
         async function initializeAppLifecycle() {
-            // Ping the backend server to see if your cron job or explicit load wakes it up
             try {
                 const controller = new AbortController();
                 setTimeout(() => controller.abort(), 65000); 
                 await fetch(`${BACKEND_URL}/api/search?q=ping`, { signal: controller.signal }).catch(() => {});
                 document.getElementById('loadingOverlay').classList.add('hidden');
             } catch (err) {
-                console.error("Backend took too long to complete its warm-up cycle.", err);
-                document.getElementById('loadingOverlay').classList.add('hidden'); // Fail open for local dev environments
+                console.error("Warmup framework connection time exhausted.", err);
+                document.getElementById('loadingOverlay').classList.add('hidden'); 
             }
 
-            // Initialize Discord Session Verification using your App ID
             if (typeof DiscordSDK !== 'undefined') {
                 try {
                     discordSdk = new DiscordSDK.SDK("1512914514960449556");
                     await discordSdk.ready();
-                    
                     const auth = await discordSdk.commands.authorize({
                         client_id: "1512914514960449556",
                         scope: ["identify", "guilds.channels.read"],
                     });
-                    
                     const response = await discordSdk.commands.authenticate({ access_token: auth.code });
                     currentUser = response.user;
                     currentRoom = discordSdk.instanceId || "fallback_room";
                 } catch (e) {
-                    console.log("Not running inside production Discord framework — skipping secure handshake authorization.");
+                    console.log("Local Sandbox active: Skipping Discord frame validation hooks.");
                 }
             }
             initWebSocket();
@@ -114,15 +132,16 @@
                 }
                 internalSyncChange = false;
             };
-
-            wsConn.onclose = () => setTimeout(initWebSocket, 3000); // Robust dynamic self-healing connection hook
+            wsConn.onclose = () => setTimeout(initWebSocket, 3000);
         }
 
         async function executeSearch() {
             const query = document.getElementById('searchInput').value;
             if (!query) return;
+            
+            document.getElementById('sectionTitle').innerText = "Search Results";
             const grid = document.getElementById('contentGrid');
-            grid.innerHTML = `<div class="col-span-full text-center py-10"><span class="loading loading-bars loading-lg text-primary"></span></div>`;
+            grid.innerHTML = `<div class="col-span-full text-center py-20"><span class="loading loading-bars loading-lg text-primary"></span></div>`;
             
             try {
                 const res = await fetch(`${BACKEND_URL}/api/search?q=${encodeURIComponent(query)}`);
@@ -130,33 +149,51 @@
                 grid.innerHTML = "";
                 
                 if(!data.results || data.results.length === 0) {
-                    grid.innerHTML = `<div class="col-span-full text-center py-10">No titles found matching your search string.</div>`;
+                    grid.innerHTML = `
+                        <div class="col-span-full text-center py-20 text-neutral-content">
+                            <i class="fa-solid fa-face-frown text-4xl mb-3 opacity-40"></i>
+                            <p class="font-bold">No titles indexed matching that string query.</p>
+                        </div>`;
                     return;
                 }
 
                 data.results.forEach(anime => {
+                    // Fix AniList nested title payload variant securely
+                    const titleString = anime.title.english || anime.title.romaji || anime.title.userPreferred || "Unknown Title";
+                    const ratingBadge = anime.rating ? `<span class="badge badge-accent font-bold text-xs shadow-md">${anime.rating}%</span>` : '';
+                    const typeBadge = anime.type ? `<span class="badge badge-neutral font-bold text-xs shadow-md uppercase">${anime.type}</span>` : '';
+
                     grid.innerHTML += `
-                        <div class="card bg-base-200 shadow-md cursor-pointer hover:scale-105 transition-all" onclick="loadAnimeDetails('${anime.id}')">
-                            <figure class="px-2 pt-2"><img src="${anime.image}" class="rounded-lg object-cover h-48 w-full" /></figure>
-                            <div class="card-body p-3"><h2 class="card-title text-sm line-clamp-2">${anime.title}</h2></div>
+                        <div class="group card bg-base-200 overflow-hidden shadow-lg cursor-pointer hover:shadow-primary/10 border border-base-100 hover:border-primary/30 transition-all duration-300 relative rounded-xl" onclick="loadAnimeDetails('${anime.id}')">
+                            <div class="absolute top-2 left-2 z-10 flex flex-col gap-1">
+                                ${ratingBadge}
+                                ${typeBadge}
+                            </div>
+                            <figure class="overflow-hidden aspect-[3/4] bg-neutral-900 relative">
+                                <img src="${anime.image}" class="object-cover h-full w-full group-hover:scale-110 group-hover:rotate-1 transition-all duration-500" loading="lazy" />
+                                <div class="absolute inset-0 bg-gradient-to-t from-base-900 via-transparent to-transparent opacity-60"></div>
+                            </figure>
+                            <div class="card-body p-3 bg-base-200">
+                                <h2 class="font-bold text-sm tracking-tight text-white line-clamp-2 min-h-[2.5rem] group-hover:text-primary transition-colors">${titleString}</h2>
+                            </div>
                         </div>`;
                 });
             } catch (err) {
-                grid.innerHTML = `<div class="col-span-full text-error text-center">Search compilation connection failure. Check backend route states.</div>`;
+                grid.innerHTML = `<div class="col-span-full text-error text-center py-10 font-bold"><i class="fa-solid fa-triangle-exclamation mr-2"></i> Connection state failure. Ensure backend services are running.</div>`;
             }
         }
 
         async function loadAnimeDetails(animeId) {
             currentAnimeId = animeId;
+            document.getElementById('sectionTitle').innerText = "Loading Metadata Catalog...";
             const grid = document.getElementById('contentGrid');
-            grid.innerHTML = `<div class="col-span-full text-center py-10"><span class="loading loading-ring loading-lg text-secondary"></span></div>`;
+            grid.innerHTML = `<div class="col-span-full text-center py-20"><span class="loading loading-ring loading-lg text-primary"></span></div>`;
             
             try {
                 const res = await fetch(`${BACKEND_URL}/api/anime/${animeId}`);
                 const data = await res.json();
                 currentEpisodeList = data.episodes;
                 
-                // Query watch progress metadata matching context keys
                 const historyRes = await fetch(`${BACKEND_URL}/api/history/get?user_id=${currentUser.id}&anime_id=${animeId}`);
                 const historyData = await historyRes.json();
                 
@@ -165,48 +202,52 @@
                 
                 renderEpisodeCatalog(historyData.progress_seconds);
             } catch (err) {
-                grid.innerHTML = `<div class="col-span-full text-error text-center">Failed to unpack individual show mapping details.</div>`;
+                grid.innerHTML = `<div class="col-span-full text-error text-center py-10 font-bold">Failed to decrypt content endpoint map structural metadata.</div>`;
             }
         }
 
         function renderEpisodeCatalog(resumeSeconds = 0) {
+            document.getElementById('sectionTitle').innerText = "Episode Index Grid";
             const grid = document.getElementById('contentGrid');
             grid.innerHTML = `
-                <div class="col-span-full mb-4">
-                    <button onclick="location.reload()" class="btn btn-sm btn-neutral">← Back to Search</button>
-                    <h2 class="text-xl font-bold mt-2">Select Episode</h2>
+                <div class="col-span-full mb-2 flex items-center justify-between bg-base-200 p-4 rounded-xl border border-base-100 shadow-md">
+                    <span class="text-sm font-medium text-neutral-content">Available Episodes: <b class="text-white">${currentEpisodeList.length}</b></span>
+                    <button onclick="location.reload()" class="btn btn-sm btn-outline gap-2"><i class="fa-solid fa-arrow-left"></i> Return</button>
                 </div>`;
             
             if(!currentEpisodeList || currentEpisodeList.length === 0) {
-                grid.innerHTML += `<div class="col-span-full text-warning">No indexed episodes are currently available.</div>`;
+                grid.innerHTML += `<div class="col-span-full text-warning p-4 text-center font-bold">No streaming stream manifest items mapped yet for this title database entry.</div>`;
                 return;
             }
 
+            // High throughput flex wrap grid container for clean aesthetic packing
+            const container = document.createElement('div');
+            container.className = "col-span-full grid grid-cols-3 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 gap-3 mt-2";
+
             currentEpisodeList.forEach(ep => {
                 const isCurrent = ep.number === currentEpisodeNum;
-                grid.innerHTML += `
-                    <button class="btn ${isCurrent ? 'btn-primary' : 'btn-outline'} m-1" onclick="launchStream('${ep.id}', ${ep.number}, ${isCurrent ? resumeSeconds : 0})">
-                        Ep ${ep.number}
+                container.innerHTML += `
+                    <button class="btn btn-md ${isCurrent ? 'btn-primary font-black shadow-lg' : 'btn-neutral border border-base-100 font-bold'} rounded-xl transition-all hover:scale-105" onclick="launchStream('${ep.id}', ${ep.number}, ${isCurrent ? resumeSeconds : 0})">
+                        ${isCurrent ? '<i class="fa-solid fa-play text-xs animate-pulse mr-1"></i>' : ''} EP ${ep.number}
                     </button>`;
             });
+            grid.appendChild(container);
         }
 
         async function launchStream(episodeId, episodeNum, startTime = 0) {
             currentEpisodeNum = episodeNum;
             document.getElementById('playerSection').classList.remove('hidden');
-            document.getElementById('playingTitle').innerText = `Playing Episode ${episodeNum}`;
+            document.getElementById('playingTitle').innerText = `Episode ${episodeNum}`;
             document.getElementById('toggleSubDub').innerText = currentAudioType.toUpperCase();
             window.scrollTo({ top: 0, behavior: 'smooth' });
 
             try {
                 const res = await fetch(`${BACKEND_URL}/api/stream/${episodeId}`);
                 const data = await res.json();
-                
-                // Fall back securely if explicit quality keys aren't explicitly flagged
                 const source = data.sources.find(s => s.quality === "default") || data.sources[0];
                 setupVideoPlayer(source.url, startTime);
             } catch (err) {
-                alert("Playback tracking parameters dropped by server stream decryption layers.");
+                alert("Playback payload could not stream down stream decryption pipelines securely.");
             }
         }
 
@@ -218,9 +259,10 @@
                 url: streamUrl,
                 type: 'm3u8',
                 customPlaybackRate: [0.5, 1, 1.5, 2],
-                autoSize: true,
+                autoSize: false,
                 fullscreen: true,
                 airplay: true,
+                theme: '#570df8', // Match primary Tailwind color dynamically
                 customType: {
                     m3u8: function (video, url) {
                         if (Hls.isSupported()) {
@@ -237,7 +279,6 @@
             art.on('ready', () => {
                 if (startTime > 0) art.currentTime = startTime;
                 
-                // Action triggers for WebSocket party synchronization
                 art.on('play', () => {
                     if (!internalSyncChange) wsConn.send(JSON.stringify({ action: "play" }));
                 });
@@ -248,7 +289,6 @@
                     if (!internalSyncChange) wsConn.send(JSON.stringify({ action: "seek", time }));
                 });
 
-                // Auto-sync history parameters to external engines every 10 seconds
                 setInterval(() => {
                     if (art && art.playing) {
                         fetch(`${BACKEND_URL}/api/history/save`, {
