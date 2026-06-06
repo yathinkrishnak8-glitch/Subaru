@@ -3,28 +3,22 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Subaru Anime Activity</title>
-    <!-- Tailwind & DaisyUI Prebuilt Open-Source Components -->
+    <title>Stream</title>
     <link href="https://cdn.jsdelivr.net/npm/daisyui@4.7.2/dist/full.min.css" rel="stylesheet" type="text/css" />
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Artplayer and HLS Core for streaming .m3u8 manifests -->
     <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
     <script src="https://cdn.jsdelivr.net/npm/artplayer/dist/artplayer.js"></script>
-    <!-- Discord Embedded App SDK -->
     <script src="https://g.embedit.in/discord-embedded-app-sdk-1.0.0.js"></script>
 </head>
 <body class="bg-base-300 text-base-content min-h-screen font-sans">
 
-    <!-- Cold Start Loader Overlay -->
     <div id="loadingOverlay" class="fixed inset-0 bg-base-900 bg-opacity-95 z-50 flex flex-col items-center justify-center space-y-4">
         <span class="loading loading-spinner loading-lg text-primary"></span>
         <h2 class="text-xl font-bold">Waking up Subaru Server...</h2>
         <p class="text-sm text-neutral-content animate-pulse">This can take up to 60 seconds if the backend was sleeping on the free tier.</p>
     </div>
 
-    <!-- Application Dashboard Layout -->
     <div class="container mx-auto p-4 max-w-5xl">
-        <!-- Header / Search Bar Row -->
         <header class="flex flex-col md:flex-row justify-between items-center mb-6 gap-4 bg-base-200 p-4 rounded-xl shadow-lg">
             <h1 class="text-2xl font-black text-primary tracking-wider">SUBARU STREAM</h1>
             <div class="join w-full md:w-96">
@@ -33,7 +27,6 @@
             </div>
         </header>
 
-        <!-- Media Player Container (Hidden until an episode is selected) -->
         <section id="playerSection" class="hidden mb-6 card bg-black overflow-hidden shadow-2xl border border-neutral">
             <div id="videoContainer" class="w-full aspect-video"></div>
             <div class="p-4 bg-base-200 flex justify-between items-center flex-wrap gap-2">
@@ -45,7 +38,6 @@
             </div>
         </section>
 
-        <!-- Dynamic Results Grid & Episode Catalog Space -->
         <main id="contentGrid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
             <div class="col-span-full text-center py-10 text-neutral-content">
                 Search for an anime series above to start streaming.
@@ -54,9 +46,9 @@
     </div>
 
     <script>
-        // CONFIGURATION: Replace with your actual live URL when your Render instance goes active
-        const BACKEND_URL = "https://your-subaru-app.onrender.com";
-        const WS_URL = "wss://your-subaru-app.onrender.com";
+        // LIVE CONFIGURATION
+        const BACKEND_URL = "https://subaru-my7g.onrender.com";
+        const WS_URL = "wss://subaru-my7g.onrender.com";
 
         let discordSdk = null;
         let currentUser = { id: "local_dev_user" };
