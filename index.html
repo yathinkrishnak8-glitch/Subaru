@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Anime Activity Player</title>
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@4.7.2/dist/full.min.css" rel="stylesheet" type="text/css" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <script src="https://cdn.jsdelivr.net/npm/artplayer/dist/artplayer.js"></script>
+    <script src="https://g.embedit.in/discord-embedded-app-sdk-1.0.0.js"></script>
+</head>
+<body class="bg-base-300 text-base-content min-h-screen font-sans">
+
+    <div id="loadingOverlay" class="fixed inset-0 bg-base-900 bg-opacity-95 z-50 flex flex-col items-center justify-center space-y-4">
+        <span class="loading loading-spinner loading-lg text-primary"></span>
+        <h2 class="text-xl font-bold">Waking up server on Render...</h2>
+        <p class="text-sm text-neutral-content animate-pulse">This may take up to 60 seconds if the backend was sleeping.</p>
+    </div>
+
+    <div class="container mx-auto p-4 max-w-5xl">
+        <header class="flex flex-col md:flex-row justify-between items-center mb-6 gap-4 bg-base-200 p-4 rounded-xl shadow-lg">
+            <h1 class="text-2xl font-black text-primary tracking-wider">KLEIN STREAM</h1>
+            <div class="join w-full md:w-96">
+                <input id="searchInput" type="text" placeholder="Search anime series..." class="input input-bordered join-item w-full bg-base-100" />
+                <button onclick="executeSearch()" class="btn btn-primary join-item">Search</button>
+            </div>
+        </header>
+
+        <section id="playerSection" class="hidden mb-6 card bg-black overflow-hidden shadow-2xl border border-neutral">
+            <div id="videoContainer" class="w-full aspect-video"></div>
+            <div class="p-4 bg-base-200 flex justify-between items-center flex-wrap gap-2">
+                <h3 id="playingTitle" class="font-bold text-lg text-neutral-content">Loading episode...</h3>
+                <div class="flex items-center space-x-3">
+                    <span class="text-sm font-semibold">Audio Variant:</span>
+                    <button id="toggleSubDub" onclick="switchAudioType()" class="btn btn-sm btn-outline btn-secondary">SUB</button>
+                </div>
+            </div>
+        </section>
+
+        <main id="contentGrid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+            </main>
+    </div>
+
+    <script>
+        // CONFIGURATION: Replace with your actual Render URL when deployed
+        const BACKEND_URL = "https://your-app-name.onrender.com";
+        const WS_URL = "wss://your-app-name.onrender.com";
+
+        let discordSdk = null;
+        let currentUser = { id: "local_dev_user" };
+        let currentRoom = "local_dev_room";
+        let wsConn = null;
+        let art = null;
+        let currentAnimeId = "";
+        let currentEpisodeNum = 1;
+        let currentAudioType = "sub"; // Defaults to subbed releases
+        let currentEpisodeList = [];
+        let internalSyncChange = false;
+
+        window.addEventListener('DOMContentLoaded', async () => {
+            await initializeAppLifecycle();
+        });
+
+        async function initializeAppLifecycle() {
+            // Ping the backend server to see if it's awake before hiding the overlay
+            try {
+                const controller = new AbortController();
+                setTimeout(() => controller.abort(), 65000); // 65-second deadline for Render cold-starts
+                await fetch(`${BACKEND_URL}/api/search?q=ping`, { signal: controller.signal }).catch(() => {});
+                document.getElementById('loadingOverlay').classList.add('hidden');
+            } catch (err) {
+                console.error("Backend failed to wake up within standard bounds.", err);
+            }
+
+            // Initialize Discord Session Verification
+            if (typeof DiscordSDK !== 'undefined') {
+                try {
+                    discordSdk = new DiscordSDK.SDK("YOUR_DISCORD_CLIENT_ID");
+                    await discordSdk.ready();
+                    const auth = await discordSdk.commands.authorize({
+                        client_id: "YOUR_DISCORD_CLIENT_ID",
+                        scope: ["identify", "guilds.channels.read"],
+                    });
+                    const response = await discordSdk.commands.authenticate({ access_token: auth.code });
+                    currentUser = response.user;
+                    currentRoom = discordSdk.instanceId || "fallback_room";
+                } catch (e) {
+                    console.log("Running app outside of Discord production container context - using local configurations.");
+                }
+            }
+            initWebSocket();
+        }
+
+        function initWebSocket() {
+            wsConn = new WebSocket(`${WS_URL}/ws/${currentRoom}`);
+            wsConn.onmessage = (event) => {
+                const msg = JSON.parse(event.data);
+                if (!art) return;
+
+                internalSyncChange = true; 
+                if (msg.action === "pause" && art.playing) {
+                    art.pause();
+                } else if (msg.action === "play" && !art.playing) {
+                    art.play();
+                } else if (msg.action === "seek" && Math.abs(art.currentTime - msg.time) > 2) {
+                    art.currentTime = msg.time;
+                }
+                internalSyncChange = false;
+            };
+
+            wsConn.onclose = () => setTimeout(initWebSocket, 3000); // Robust self-healing hook
+        }
+
+        async function executeSearch() {
+            const query = document.getElementById('searchInput').value;
+            if (!query) return;
+            const grid = document.getElementById('contentGrid');
+            grid.innerHTML = `<div class="col-span-full text-center py-10"><span class="loading loading-bars loading-lg text-primary"></span></div>`;
+            
+            try {
+                const res = await fetch(`${BACKEND_URL}/api/search?q=${encodeURIComponent(query)}`);
+                const data = await res.json();
+                grid.innerHTML = "";
+                
+                data.results.forEach(anime => {
+                    grid.innerHTML += `
+                        <div class="card bg-base-200 shadow-md cursor-pointer hover:scale-105 transition-all" onclick="loadAnimeDetails('${anime.id}')">
+                            <figure class="px-2 pt-2"><img src="${anime.image}" class="rounded-lg object-cover h-48 w-full" /></figure>
+                            <div class="card-body p-3"><h2 class="card-title text-sm line-clamp-2">${anime.title}</h2></div>
+                        </div>`;
+                });
+            } catch (err) {
+                grid.innerHTML = `<div class="col-span-full text-error text-center">Search error. Please verify input syntax.</div>`;
+            }
+        }
+
+        async function loadAnimeDetails(animeId) {
+            currentAnimeId = animeId;
+            const grid = document.getElementById('contentGrid');
+            grid.innerHTML = `<div class="col-span-full text-center py-10"><span class="loading loading-ring loading-lg text-secondary"></span></div>`;
+            
+            try {
+                const res = await fetch(`${BACKEND_URL}/api/anime/${animeId}`);
+                const data = await res.json();
+                currentEpisodeList = data.episodes;
+                
+                // Fetch context record for 'Continue Watching' values
+                const historyRes = await fetch(`${BACKEND_URL}/api/history/get?user_id=${currentUser.id}&anime_id=${animeId}`);
+                const historyData = await historyRes.json();
+                
+                currentEpisodeNum = historyData.episode_num;
+                currentAudioType = historyData.sub_or_dub;
+                
+                renderEpisodeCatalog(historyData.progress_seconds);
+            } catch (err) {
+                grid.innerHTML = `<div class="col-span-full text-error text-center">Failed to fetch episode mapping lists.</div>`;
+            }
+        }
+
+        function renderEpisodeCatalog(resumeSeconds = 0) {
+            const grid = document.getElementById('contentGrid');
+            grid.innerHTML = `
+                <div class="col-span-full mb-4">
+                    <button onclick="location.reload()" class="btn btn-sm btn-neutral">← Back to Search</button>
+                    <h2 class="text-xl font-bold mt-2">Select Episode</h2>
+                </div>`;
+            
+            currentEpisodeList.forEach(ep => {
+                const isCurrent = ep.number === currentEpisodeNum;
+                grid.innerHTML += `
+                    <button class="btn ${isCurrent ? 'btn-primary' : 'btn-outline'} m-1" onclick="launchStream('${ep.id}', ${ep.number}, ${isCurrent ? resumeSeconds : 0})">
+                        Ep ${ep.number}
+                    </button>`;
+            });
+        }
+
+        async function launchStream(episodeId, episodeNum, startTime = 0) {
+            currentEpisodeNum = episodeNum;
+            document.getElementById('playerSection').classList.remove('hidden');
+            document.getElementById('playingTitle').innerText = `Playing Episode ${episodeNum}`;
+            document.getElementById('toggleSubDub').innerText = currentAudioType.toUpperCase();
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+
+            try {
+                const res = await fetch(`${BACKEND_URL}/api/stream/${episodeId}`);
+                const data = await res.json();
+                
+                // Select default source from response array payload safely
+                const source = data.sources.find(s => s.quality === "default") || data.sources[0];
+                setupVideoPlayer(source.url, startTime);
+            } catch (err) {
+                alert("Error extracting stream configurations. The target mirror could be down.");
+            }
+        }
+
+        function setupVideoPlayer(streamUrl, startTime) {
+            if (art) art.destroy();
+
+            art = new Artplayer({
+                container: '#videoContainer',
+                url: streamUrl,
+                type: 'm3u8',
+                customPlaybackRate: [0.5, 1, 1.5, 2],
+                autoSize: true,
+                fullscreen: true,
+                airplay: true,
+                customType: {
+                    m3u8: function (video, url) {
+                        if (Hls.isSupported()) {
+                            const hls = new Hls();
+                            hls.loadSource(url);
+                            hls.attachMedia(video);
+                        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                            video.src = url;
+                        }
+                    },
+                },
+            });
+
+            art.on('ready', () => {
+                if (startTime > 0) art.currentTime = startTime;
+                
+                // Setup synchronization triggers across room connections
+                art.on('play', () => {
+                    if (!internalSyncChange) wsConn.send(JSON.stringify({ action: "play" }));
+                });
+                art.on('pause', () => {
+                    if (!internalSyncChange) wsConn.send(JSON.stringify({ action: "pause" }));
+                });
+                art.on('seek', (time) => {
+                    if (!internalSyncChange) wsConn.send(JSON.stringify({ action: "seek", time }));
+                });
+
+                // Auto-save history every 10 seconds to database endpoints
+                setInterval(() => {
+                    if (art && art.playing) {
+                        fetch(`${BACKEND_URL}/api/history/save`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                user_id: currentUser.id,
+                                anime_id: currentAnimeId,
+                                episode_num: currentEpisodeNum,
+                                sub_or_dub: currentAudioType,
+                                progress_seconds: art.currentTime
+                            })
+                        }).catch(() => {});
+                    }
+                }, 10000);
+            });
+        }
+
+        function switchAudioType() {
+            currentAudioType = currentAudioType === "sub" ? "dub" : "sub";
+            document.getElementById('toggleSubDub').innerText = currentAudioType.toUpperCase();
+            
+            // Re-find target node based on language key formatting rules
+            const targetEp = currentEpisodeList.find(ep => ep.number === currentEpisodeNum);
+            if (targetEp) {
+                launchStream(targetEp.id, currentEpisodeNum, art ? art.currentTime : 0);
+            }
+        }
+    </script>
+</body>
+</html>
