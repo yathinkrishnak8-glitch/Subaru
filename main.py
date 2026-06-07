@@ -130,12 +130,12 @@ def get_progress(user_id: str, anime_id: str):
 # 2. ANILIST GRAPHQL NATIVE SEARCH
 # ==========================================
 async def search_anilist_graphql(query: str, client: httpx.AsyncClient):
-    """Bypasses Cloudflare blocks entirely by using the official public AniList API"""
+    """Uses official AniList API with strict SEARCH_MATCH sorting for highly relevant results"""
     url = "https://graphql.anilist.co"
     graphql_query = """
     query ($search: String) {
-      Page(page: 1, perPage: 24) {
-        media(search: $search, type: ANIME, sort: POPULARITY_DESC) {
+      Page(page: 1, perPage: 30) {
+        media(search: $search, type: ANIME, sort: [SEARCH_MATCH, POPULARITY_DESC]) {
           id
           title { english romaji userPreferred native }
           coverImage { extraLarge large }
@@ -154,7 +154,6 @@ async def search_anilist_graphql(query: str, client: httpx.AsyncClient):
             for item in data.get("data", {}).get("Page", {}).get("media", []):
                 t = item.get("title", {})
                 title = t.get("english") or t.get("romaji") or t.get("userPreferred") or t.get("native") or "Unknown"
-                
                 img = item.get("coverImage", {})
                 image = img.get("extraLarge") or img.get("large") or ""
                 
@@ -172,59 +171,66 @@ async def search_anilist_graphql(query: str, client: httpx.AsyncClient):
     return []
 
 # ==========================================
-# 3. STREAMING PROVIDER CASCADE
+# 3. VIDCLOUD / VIDSTREAM MASTER ROUTER
 # ==========================================
-class ConsumetMetaProvider:
-    def __init__(self, provider_name):
-        self.provider = provider_name
-        self.mirrors = [
-            "https://api-consumet.vercel.app/meta/anilist",
-            "https://consumet-api.onrender.com/meta/anilist",
-            "https://api.consumet.org/meta/anilist"
-        ]
-
-    async def info(self, anilist_id: str, client: httpx.AsyncClient):
-        for base_url in self.mirrors:
-            try:
-                res = await client.get(f"{base_url}/info/{anilist_id}?provider={self.provider}", timeout=10.0)
-                if res.status_code == 200:
-                    data = res.json()
-                    episodes = [{"id": f"consumet|{self.provider}|{ep['id']}", "number": ep.get('number', 1)} for ep in data.get("episodes", [])]
-                    if episodes:
-                        return {"provider": f"Consumet ({self.provider.upper()})", "episodes": episodes}
-            except Exception:
-                continue
-        return None
-
-class AMVSTRProvider:
-    async def info(self, anilist_id: str, client: httpx.AsyncClient):
-        try:
-            res = await client.get(f"https://api.amvstr.me/api/v2/info/{anilist_id}", timeout=10.0)
-            if res.status_code == 200:
-                data = res.json()
-                episodes = [{"id": f"amvstr|{ep['id']}", "number": ep.get('number', 1)} for ep in data.get("episodes", [])]
-                if episodes:
-                    return {"provider": "AMVSTR NATIVE", "episodes": episodes}
-        except Exception:
-            pass
-        return None
-
 class MasterRouter:
     def __init__(self):
-        # The cascade order: Zoro -> AMVSTR -> Gogoanime
-        self.info_providers = [
-            ConsumetMetaProvider("zoro"),
-            AMVSTRProvider(),
-            ConsumetMetaProvider("gogoanime")
+        # We ping multiple proxy mirrors to assure high availability
+        self.mirrors = [
+            "https://api-consumet.vercel.app",
+            "https://consumet-api.onrender.com",
+            "https://api.consumet.org"
         ]
 
-    async def get_info(self, composite_id: str):
+    async def get_info(self, composite_id: str, title: str):
         clean_id = composite_id.replace("anilist|", "")
         async with httpx.AsyncClient(timeout=15.0) as client:
-            for p in self.info_providers:
-                data = await p.info(clean_id, client)
-                if data and data.get("episodes"):
-                    return data
+            
+            # ATTEMPT 1: Meta ID Mapping (Zoro uses Vidcloud/Vidstream natively)
+            for base in self.mirrors:
+                try:
+                    res = await client.get(f"{base}/meta/anilist/info/{clean_id}?provider=zoro")
+                    if res.status_code == 200:
+                        data = res.json()
+                        eps = data.get("episodes", [])
+                        if eps:
+                            episodes = [{"id": f"consumet|zoro|{ep['id']}", "number": ep.get('number', 1)} for ep in eps]
+                            return {"provider": "Meta (Vidstream)", "episodes": episodes}
+                except Exception:
+                    continue
+
+            # ATTEMPT 2: AMVSTR Fast Fallback
+            try:
+                res = await client.get(f"https://api.amvstr.me/api/v2/info/{clean_id}", timeout=10.0)
+                if res.status_code == 200:
+                    data = res.json()
+                    eps = data.get("episodes", [])
+                    if eps:
+                        episodes = [{"id": f"amvstr|{ep['id']}", "number": ep.get('number', 1)} for ep in eps]
+                        return {"provider": "AMVSTR Native", "episodes": episodes}
+            except Exception:
+                pass
+
+            # ATTEMPT 3: The Direct Title Fallback Bypass (Targeting Zoro/Vidstream)
+            # Fully bypasses Anilist mapping and searches the Vidstream index directly.
+            if title:
+                clean_title = urllib.parse.quote(title.strip())
+                for base in self.mirrors:
+                    try:
+                        search_res = await client.get(f"{base}/anime/zoro/{clean_title}")
+                        if search_res.status_code == 200:
+                            search_data = search_res.json().get("results", [])
+                            if search_data:
+                                zoro_id = search_data[0]["id"]
+                                info_res = await client.get(f"{base}/anime/zoro/info?id={zoro_id}")
+                                if info_res.status_code == 200:
+                                    eps = info_res.json().get("episodes", [])
+                                    if eps:
+                                        episodes = [{"id": f"fallback|zoro|{ep['id']}", "number": ep.get('number', 1)} for ep in eps]
+                                        return {"provider": "Direct Match (Vidcloud)", "episodes": episodes}
+                    except Exception:
+                        continue
+
         return {"episodes": [], "provider": "None"}
 
     async def get_stream(self, composite_id: str):
@@ -233,17 +239,30 @@ class MasterRouter:
         
         async with httpx.AsyncClient(timeout=15.0) as client:
             if engine == "consumet":
-                provider_name = parts[1]
+                provider = parts[1] # "zoro"
                 ep_id = urllib.parse.quote(parts[2], safe='')
-                mirrors = [
-                    "https://api-consumet.vercel.app/meta/anilist",
-                    "https://consumet-api.onrender.com/meta/anilist"
-                ]
-                for base in mirrors:
+                for base in self.mirrors:
                     try:
-                        res = await client.get(f"{base}/watch/{ep_id}?provider={provider_name}")
+                        url = f"{base}/meta/anilist/watch/{ep_id}?provider={provider}"
+                        res = await client.get(url)
                         if res.status_code == 200:
-                            return res.json()
+                            data = res.json()
+                            if data.get("sources"):
+                                return data
+                    except Exception:
+                        continue
+
+            elif engine == "fallback":
+                provider = parts[1] # "zoro"
+                ep_id = urllib.parse.quote(parts[2], safe='')
+                for base in self.mirrors:
+                    try:
+                        url = f"{base}/anime/{provider}/watch?episodeId={ep_id}"
+                        res = await client.get(url)
+                        if res.status_code == 200:
+                            data = res.json()
+                            if data.get("sources"):
+                                return data
                     except Exception:
                         continue
                         
@@ -258,7 +277,7 @@ class MasterRouter:
                 except Exception:
                     pass
                     
-        raise HTTPException(status_code=502, detail="Stream resolution failed across all nodes.")
+        raise HTTPException(status_code=502, detail="Stream resolution failed across all Vidcloud/Vidstream nodes.")
 
 router = MasterRouter()
 
@@ -305,8 +324,8 @@ async def search_anime(q: str):
         return {"results": results}
 
 @app.get("/api/anime/{anime_id:path}")
-async def get_anime_details(anime_id: str):
-    return await router.get_info(anime_id)
+async def get_anime_details(anime_id: str, title: str = ""):
+    return await router.get_info(anime_id, title)
 
 @app.get("/api/stream")
 async def get_stream_urls(episode_id: str):
