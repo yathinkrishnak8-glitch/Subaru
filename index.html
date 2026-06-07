@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Ani Stream</title>
+    <title>Stream Activity Portal</title>
     <link href="https://cdn.jsdelivr.net/npm/daisyui@4.7.2/dist/full.min.css" rel="stylesheet" type="text/css" />
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -11,7 +11,6 @@
     <script src="https://cdn.jsdelivr.net/npm/artplayer/dist/artplayer.js"></script>
     <script src="https://g.embedit.in/discord-embedded-app-sdk-1.0.0.js"></script>
     <style>
-        /* Touch safety scroll optimization for ultra-smooth mobile rendering */
         .no-scrollbar::-webkit-scrollbar { display: none; }
         .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
         body { -webkit-tap-highlight-color: transparent; }
@@ -35,7 +34,6 @@
                 <span class="text-white">STREAM</span><span class="text-primary font-light text-sm hidden sm:inline">META</span>
             </button>
         </div>
-        
         <div class="flex-none w-full max-w-xs sm:max-w-sm md:max-w-md ml-2">
             <div class="join w-full shadow-md rounded-xl overflow-hidden border border-base-100">
                 <input id="searchInput" type="text" placeholder="Type title keywords..." class="input input-sm sm:input-md bg-base-100 join-item w-full focus:outline-none focus:border-primary text-xs sm:text-sm font-semibold px-3" onkeyup="if(event.key === 'Enter') executeSearch()" />
@@ -46,11 +44,9 @@
         </div>
     </header>
 
-    <main class="flex-1 container mx-auto p-3 sm:p-6 lg:p-8 max-w-7xl">
-        
+    <main class="flex-1 container mx-auto p-4 sm:p-6 lg:p-8 max-w-7xl">
         <section id="playerSection" class="hidden mb-6 sm:mb-8 card bg-black overflow-hidden shadow-2xl border border-neutral/30 rounded-2xl transition-all">
             <div id="videoContainer" class="w-full aspect-video bg-neutral-950"></div>
-            
             <div class="p-4 bg-base-200 border-t border-base-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                 <div class="flex items-start gap-3">
                     <div class="p-2 bg-primary/10 rounded-lg text-primary hidden sm:inline-block mt-1">
@@ -64,7 +60,6 @@
                         <h3 id="playingTitle" class="font-extrabold text-sm sm:text-md text-white tracking-tight line-clamp-1">Initializing content stream pipeline...</h3>
                     </div>
                 </div>
-                
                 <div class="flex items-center justify-between w-full sm:w-auto gap-4 bg-base-100 p-1.5 px-3 rounded-xl border border-base-100">
                     <span class="text-[11px] font-black uppercase tracking-widest text-neutral-content/70">Audio Track</span>
                     <div class="join">
@@ -83,7 +78,7 @@
             <div id="headerActions"></div>
         </div>
 
-        <div id="contentGrid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 sm:gap-5 transition-all">
+        <div id="contentGrid" class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 sm:gap-5 transition-all">
             <div class="col-span-full text-center py-16 sm:py-24 bg-base-200 rounded-2xl border border-base-100 p-4 shadow-inner">
                 <div class="w-14 h-14 bg-base-100 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-neutral/20 shadow-sm text-neutral-content/40">
                     <i class="fa-solid fa-wand-magic-sparkles text-2xl"></i>
@@ -167,6 +162,8 @@
             document.getElementById('sectionTitle').innerText = "Query Matches";
             document.getElementById('headerActions').innerHTML = '';
             const grid = document.getElementById('contentGrid');
+            
+            grid.className = "grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 sm:gap-5 transition-all";
             grid.innerHTML = `<div class="col-span-full text-center py-16"><span class="loading loading-spinner loading-md text-primary"></span></div>`;
             
             try {
@@ -184,7 +181,6 @@
                 }
 
                 data.results.forEach(anime => {
-                    // Fallback titles collection matching all AniList variations for more complete rendering
                     const titleString = anime.title.english || anime.title.romaji || anime.title.userPreferred || anime.title.native || "Unknown Title";
                     const ratingValue = anime.rating ? `${anime.rating}%` : 'N/A';
                     const formatType = anime.type || 'TV';
@@ -221,12 +217,27 @@
             currentAnimeId = animeId;
             document.getElementById('sectionTitle').innerText = "Processing Index Structures...";
             const grid = document.getElementById('contentGrid');
-            grid.innerHTML = `<div class="col-span-full text-center py-16"><span class="loading loading-ring loading-md text-primary"></span></div>`;
+            
+            grid.className = "block w-full transition-all space-y-4";
+            grid.innerHTML = `<div class="text-center py-16"><span class="loading loading-ring loading-md text-primary"></span></div>`;
             
             try {
                 const res = await fetch(`${BACKEND_URL}/api/anime/${animeId}`);
                 const data = await res.json();
+                
                 currentEpisodeList = data.episodes || [];
+                
+                if (!currentEpisodeList || currentEpisodeList.length === 0) {
+                    grid.className = "grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 sm:gap-5 transition-all";
+                    grid.innerHTML = `
+                        <div class="col-span-full text-center py-16 bg-base-200 rounded-2xl border border-base-100 p-4">
+                            <i class="fa-solid fa-circle-exclamation text-3xl text-warning mb-2"></i>
+                            <h3 class="text-sm font-bold text-white">Episodes Sync Interrupted</h3>
+                            <p class="text-xs text-neutral-content/60 mt-1 max-w-sm mx-auto mb-4">The streaming cluster couldn't resolve video manifests for this specific record via the default provider.</p>
+                            <button onclick="executeSearch()" class="btn btn-xs btn-outline btn-neutral rounded-lg"><i class="fa-solid fa-arrow-left"></i> Return to Results</button>
+                        </div>`;
+                    return;
+                }
                 
                 const historyRes = await fetch(`${BACKEND_URL}/api/history/get?user_id=${currentUser.id}&anime_id=${animeId}`);
                 const historyData = await historyRes.json();
@@ -237,6 +248,7 @@
                 updateAudioControlState();
                 renderEpisodeCatalog(historyData.progress_seconds);
             } catch (err) {
+                grid.className = "grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 sm:gap-5 transition-all";
                 grid.innerHTML = `<div class="col-span-full text-error text-center py-10 text-xs font-bold">Failed parsing source metadata collection mappings.</div>`;
             }
         }
@@ -244,7 +256,6 @@
         function renderEpisodeCatalog(resumeSeconds = 0) {
             document.getElementById('sectionTitle').innerText = "Index Catalog Deck";
             
-            // Build Adaptive View Action Button Controls to quickly shift backward
             document.getElementById('headerActions').innerHTML = `
                 <button onclick="executeSearch()" class="btn btn-xs sm:btn-sm btn-outline btn-neutral rounded-lg flex items-center gap-1">
                     <i class="fa-solid fa-chevron-left text-[10px]"></i> Deck
@@ -252,22 +263,17 @@
                 
             const grid = document.getElementById('contentGrid');
             grid.innerHTML = `
-                <div class="col-span-full flex items-center justify-between bg-base-200 p-3 rounded-xl border border-base-100 shadow-sm text-xs">
+                <div class="flex items-center justify-between bg-base-200 p-3 rounded-xl border border-base-100 shadow-sm text-xs mb-3">
                     <span class="font-medium text-neutral-content">Total Stream Volumes: <b class="text-white">${currentEpisodeList.length} Items</b></span>
                 </div>`;
             
-            if(!currentEpisodeList || currentEpisodeList.length === 0) {
-                grid.innerHTML += `<div class="col-span-full text-warning p-4 text-center text-xs font-bold">No active episodic manifest stems found for this title tracking key.</div>`;
-                return;
-            }
-
             const container = document.createElement('div');
-            container.className = "col-span-full grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-2 mt-1";
+            container.className = "grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 xl:grid-cols-12 gap-2 w-full";
 
             currentEpisodeList.forEach(ep => {
                 const isCurrent = ep.number === currentEpisodeNum;
                 container.innerHTML += `
-                    <button class="btn btn-sm ${isCurrent ? 'btn-primary font-black shadow-md' : 'btn-neutral border border-base-100/50 font-semibold'} text-xs rounded-lg transition-transform active:scale-95" onclick="launchStream('${ep.id}', ${ep.number}, ${isCurrent ? resumeSeconds : 0})">
+                    <button class="btn btn-sm ${isCurrent ? 'btn-primary font-black shadow-md' : 'btn-neutral border border-base-100/50 font-semibold'} text-xs rounded-lg transition-transform active:scale-95 w-full" onclick="launchStream('${ep.id}', ${ep.number}, ${isCurrent ? resumeSeconds : 0})">
                         ${isCurrent ? '<i class="fa-solid fa-play text-[9px] animate-pulse mr-0.5"></i>' : ''}EP ${ep.number}
                     </button>`;
             });
