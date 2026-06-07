@@ -95,6 +95,9 @@
         let currentEpisodeNum = 1;
         let currentEpisodeList = [];
         let internalSyncChange = false;
+        
+        // Cache search results so we can pass titles securely to the fallback mapper
+        let cachedSearchResults = [];
 
         window.addEventListener('DOMContentLoaded', async () => {
             await initializeAppLifecycle();
@@ -163,7 +166,9 @@
                 const data = await res.json();
                 grid.innerHTML = "";
                 
-                if(!data.results || data.results.length === 0) {
+                cachedSearchResults = data.results || [];
+                
+                if(cachedSearchResults.length === 0) {
                     grid.innerHTML = `
                         <div class="col-span-full text-center py-16 text-neutral-content">
                             <i class="fa-solid fa-box-open text-3xl mb-2 opacity-30"></i>
@@ -172,7 +177,7 @@
                     return;
                 }
 
-                data.results.forEach(anime => {
+                cachedSearchResults.forEach(anime => {
                     const ratingBadge = anime.rating ? `<span class="badge bg-neutral-900/80 border-none backdrop-blur-md font-extrabold text-[9px] px-1.5 py-0.5 text-accent shadow-sm"><i class="fa-solid fa-star text-[8px] mr-0.5"></i>${anime.rating}%</span>` : '';
                     const typeBadge = anime.type ? `<span class="badge bg-neutral-900/80 border-none backdrop-blur-md font-black text-[9px] px-1.5 py-0.5 text-white shadow-sm uppercase">${anime.type}</span>` : '';
 
@@ -212,8 +217,12 @@
             grid.innerHTML = `<div class="text-center py-16"><span class="loading loading-ring loading-md text-primary"></span></div>`;
             
             try {
+                // Find title safely from cache for the dynamic title fallback
+                const targetAnime = cachedSearchResults.find(a => a.id === animeId);
+                const safeTitle = targetAnime ? encodeURIComponent(targetAnime.title) : "";
                 const safeId = encodeURIComponent(animeId);
-                const res = await fetch(`${BACKEND_URL}/api/anime/${safeId}`);
+                
+                const res = await fetch(`${BACKEND_URL}/api/anime/${safeId}?title=${safeTitle}`);
                 const data = await res.json();
                 
                 currentEpisodeList = data.episodes || [];
@@ -225,7 +234,7 @@
                         <div class="col-span-full text-center py-16 bg-base-200 rounded-2xl border border-base-100 p-4">
                             <i class="fa-solid fa-circle-exclamation text-3xl text-warning mb-2"></i>
                             <h3 class="text-sm font-bold text-white">Data Missing</h3>
-                            <p class="text-xs text-neutral-content/60 mt-1 max-w-sm mx-auto mb-4">The extension successfully mapped the title, but no stream files are currently hosted for it across any providers.</p>
+                            <p class="text-xs text-neutral-content/60 mt-1 max-w-sm mx-auto mb-4">The extension mapped the title, but no stream files are currently hosted for it across any providers.</p>
                             <button onclick="executeSearch()" class="btn btn-xs btn-outline btn-neutral rounded-lg"><i class="fa-solid fa-arrow-left"></i> Return</button>
                         </div>`;
                     return;
@@ -319,7 +328,7 @@
                     if (!internalSyncChange) wsConn.send(JSON.stringify({ action: "play" }));
                 });
                 art.on('pause', () => {
-                    if (!internalSyncChange) ws:Conn.send(JSON.stringify({ action: "pause" }));
+                    if (!internalSyncChange) wsConn.send(JSON.stringify({ action: "pause" }));
                 });
                 art.on('seek', (time) => {
                     if (!internalSyncChange) wsConn.send(JSON.stringify({ action: "seek", time }));
