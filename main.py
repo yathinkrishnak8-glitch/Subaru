@@ -8,74 +8,94 @@ import json
 from contextlib import contextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import HTMLResponse
+from fastapi.middleware.rules import CORSMiddleware  # Fixed import path alignment if needed
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from Crypto.Cipher import AES
 
 # ==========================================
-# 1. DATABASE CONFIGURATION
+# 1. SELF-HEALING DATABASE CONFIGURATION
 # ==========================================
 DATABASE_URL = os.environ.get("DATABASE_URL", "subaru_activity.db")
-IS_POSTGRES = DATABASE_URL.startswith("postgres://") or DATABASE_URL.startswith("postgresql://")
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+IS_POSTGRES = DATABASE_URL.startswith("postgresql://")
 
 def init_db():
+    global IS_POSTGRES
     if IS_POSTGRES:
-        import psycopg2
-        conn = psycopg2.connect(DATABASE_URL)
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS watch_history (
-                user_id VARCHAR(64),
-                anime_id VARCHAR(255),
-                episode_num INT,
-                progress_seconds FLOAT,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (user_id, anime_id)
-            );
-        """)
-    else:
-        conn = sqlite3.connect(DATABASE_URL)
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS watch_history (
-                user_id TEXT,
-                anime_id TEXT,
-                episode_num INTEGER,
-                progress_seconds REAL,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (user_id, anime_id)
-            );
-        """)
+        try:
+            import psycopg2
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS watch_history (
+                    user_id VARCHAR(64),
+                    anime_id VARCHAR(255),
+                    episode_num INT,
+                    progress_seconds FLOAT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, anime_id)
+                );
+            """)
+            conn.commit()
+            conn.close()
+            print("[Database] PostgreSQL Initialized successfully.")
+            return
+        except Exception as e:
+            print(f"[Database Warning] PostgreSQL initialization failed ({e}). Falling back to SQLite.")
+            IS_POSTGRES = False
+
+    # SQLite Fallback Layer
+    conn = sqlite3.connect("subaru_activity.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS watch_history (
+            user_id TEXT,
+            anime_id TEXT,
+            episode_num INTEGER,
+            progress_seconds REAL,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, anime_id)
+        );
+    """)
     conn.commit()
     conn.close()
+    print("[Database] SQLite Initialized successfully.")
 
 @contextmanager
 def get_db_cursor():
+    global IS_POSTGRES
     if IS_POSTGRES:
-        import psycopg2
-        conn = psycopg2.connect(DATABASE_URL)
-        cursor = conn.cursor()
         try:
-            yield cursor
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            raise e
-        finally:
-            cursor.close()
-            conn.close()
-    else:
-        conn = sqlite3.connect(DATABASE_URL)
-        cursor = conn.cursor()
-        try:
-            yield cursor
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            raise e
-        finally:
-            cursor.close()
-            conn.close()
+            import psycopg2
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            try:
+                yield cursor
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                raise e
+            finally:
+                cursor.close()
+                conn.close()
+            return
+        except Exception:
+            IS_POSTGRES = False
+
+    conn = sqlite3.connect("subaru_activity.db")
+    cursor = conn.cursor()
+    try:
+        yield cursor
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        cursor.close()
+        conn.close()
 
 def save_progress(user_id: str, anime_id: str, episode_num: int, progress: float):
     try:
@@ -88,7 +108,7 @@ def save_progress(user_id: str, anime_id: str, episode_num: int, progress: float
                     DO UPDATE SET episode_num = EXCLUDED.episode_num, 
                                   progress_seconds = EXCLUDED.progress_seconds,
                                   updated_at = CURRENT_TIMESTAMP;
-                """, (user_id, anime_id, episode_num, progress))
+                """, (str(user_id), str(anime_id), int(episode_num), float(progress)))
             else:
                 cursor.execute("""
                     INSERT INTO watch_history (user_id, anime_id, episode_num, progress_seconds, updated_at)
@@ -97,7 +117,7 @@ def save_progress(user_id: str, anime_id: str, episode_num: int, progress: float
                     DO UPDATE SET episode_num=excluded.episode_num, 
                                   progress_seconds=excluded.progress_seconds,
                                   updated_at=CURRENT_TIMESTAMP;
-                """, (user_id, anime_id, episode_num, progress))
+                """, (str(user_id), str(anime_id), int(episode_num), float(progress)))
     except Exception as e:
         print(f"[Database Error] Failed to save record: {e}")
 
@@ -105,9 +125,9 @@ def get_progress(user_id: str, anime_id: str):
     try:
         with get_db_cursor() as cursor:
             if IS_POSTGRES:
-                cursor.execute("SELECT episode_num, progress_seconds FROM watch_history WHERE user_id = %s AND anime_id = %s", (user_id, anime_id))
+                cursor.execute("SELECT episode_num, progress_seconds FROM watch_history WHERE user_id = %s AND anime_id = %s", (str(user_id), str(anime_id)))
             else:
-                cursor.execute("SELECT episode_num, progress_seconds FROM watch_history WHERE user_id = ? AND anime_id = ?", (user_id, anime_id))
+                cursor.execute("SELECT episode_num, progress_seconds FROM watch_history WHERE user_id = ? AND anime_id = ?", (str(user_id), str(anime_id)))
             row = cursor.fetchone()
             if row:
                 return {"episode_num": row[0], "progress_seconds": row[1]}
@@ -116,37 +136,7 @@ def get_progress(user_id: str, anime_id: str):
     return {"episode_num": 1, "progress_seconds": 0.0}
 
 # ==========================================
-# 2. RAW AES-256 DECRYPTION ENGINE
-# ==========================================
-def decrypt_cryptojs_aes(encrypted_text: str, passphrase: str) -> str:
-    """Standard CryptoJS AES-256 decryption algorithm for stream links"""
-    try:
-        data = base64.b64decode(encrypted_text)
-        if data[:8] != b"Salted__": return ""
-        salt = data[8:16]
-        ciphertext = data[16:]
-        
-        # EVP_BytesToKey key derivation
-        key_iv = b""
-        prev = b""
-        while len(key_iv) < 48:
-            prev = hashlib.md5(prev + passphrase.encode() + salt).digest()
-            key_iv += prev
-            
-        key = key_iv[:32]
-        iv = key_iv[32:48]
-        
-        cipher = AES.new(key, AES.MODE_CBC, iv)
-        decrypted = cipher.decrypt(ciphertext)
-        
-        # PKCS7 Unpadding
-        pad_len = decrypted[-1]
-        return decrypted[:-pad_len].decode('utf-8')
-    except Exception:
-        return ""
-
-# ==========================================
-# 3. PYTHON EXTENSION MANAGER
+# 2. DEFENSIVE PROVIDER ARCHITECTURE
 # ==========================================
 class BaseProvider:
     async def search(self, query: str, client: httpx.AsyncClient): pass
@@ -154,66 +144,116 @@ class BaseProvider:
     async def stream(self, episode_id: str, client: httpx.AsyncClient): pass
 
 class DirectExtractorProvider(BaseProvider):
-    """Primary: Raw AES Extractor using auto-updating GitHub keys"""
-    KEY_URL = "https://raw.githubusercontent.com/consumet/rapidclown/rabitstream/key.txt"
-    API_URL = "https://api-consumet.vercel.app/anime/zoro" # Used strictly for ID mapping
+    API_URL = "https://api-consumet.vercel.app/anime/zoro"
     
     async def search(self, query: str, client: httpx.AsyncClient):
-        res = await client.get(f"{self.API_URL}/{urllib.parse.quote(query)}")
-        if res.status_code == 200:
-            data = res.json()
-            return [{"id": f"direct|{item['id']}", "title": item['title'], "image": item['image']} for item in data.get("results", [])]
+        try:
+            res = await client.get(f"{self.API_URL}/{urllib.parse.quote(query)}", timeout=8.0)
+            if res.status_code == 200:
+                data = res.json()
+                results = []
+                for item in data.get("results", []):
+                    results.append({
+                        "id": f"direct|{item.get('id', '')}",
+                        "title": item.get('title', 'Unknown Title'),
+                        "image": item.get('image', ''),
+                        "type": item.get('type', 'TV')
+                    })
+                return results
+        except Exception as e:
+            print(f"[Provider Error] Direct Extractor Search Failed: {e}")
         return None
 
     async def info(self, anime_id: str, client: httpx.AsyncClient):
-        clean_id = anime_id.replace("direct|", "")
-        res = await client.get(f"{self.API_URL}/info?id={clean_id}")
-        if res.status_code == 200:
-            data = res.json()
-            episodes = [{"id": f"direct|{ep['id']}", "number": ep['number']} for ep in data.get("episodes", [])]
-            return {"provider": "RAW DECRYPTION ENGINE", "episodes": episodes}
+        try:
+            clean_id = anime_id.replace("direct|", "")
+            res = await client.get(f"{self.API_URL}/info?id={clean_id}", timeout=10.0)
+            if res.status_code == 200:
+                data = res.json()
+                episodes = []
+                for ep in data.get("episodes", []):
+                    episodes.append({
+                        "id": f"direct|{ep.get('id', '')}",
+                        "number": ep.get('number', 1)
+                    })
+                return {"provider": "RAW DECRYPTION ENGINE", "episodes": episodes}
+        except Exception as e:
+            print(f"[Provider Error] Direct Extractor Info Failed: {e}")
         return None
 
     async def stream(self, episode_id: str, client: httpx.AsyncClient):
-        clean_id = episode_id.replace("direct|", "")
-        # Get raw payload
-        res = await client.get(f"{self.API_URL}/watch?episodeId={clean_id}")
-        if res.status_code == 200:
-            data = res.json()
-            return data # Consumet proxy usually handles decryption. If it returns encrypted string, we intercept below.
+        try:
+            clean_id = episode_id.replace("direct|", "")
+            res = await client.get(f"{self.API_URL}/watch?episodeId={clean_id}", timeout=10.0)
+            if res.status_code == 200:
+                return res.json()
+        except Exception as e:
+            print(f"[Provider Error] Direct Extractor Stream Failed: {e}")
         return None
 
 class AMVSTRProvider(BaseProvider):
-    """Fallback 1: Highly reliable open-source API layer"""
     BASE_URL = "https://api.amvstr.me/api/v2"
     
     async def search(self, query: str, client: httpx.AsyncClient):
-        res = await client.get(f"{self.BASE_URL}/search?q={urllib.parse.quote(query)}")
-        if res.status_code == 200:
-            data = res.json()
-            return [{"id": f"amvstr|{item['id']}", "title": item['title']['english'] or item['title']['romaji'], "image": item['coverImage']['large']} for item in data.get("results", [])]
+        try:
+            res = await client.get(f"{self.BASE_URL}/search?q={urllib.parse.quote(query)}", timeout=8.0)
+            if res.status_code == 200:
+                data = res.json()
+                results = []
+                for item in data.get("results", []):
+                    title_obj = item.get('title', {})
+                    title = "Unknown"
+                    if isinstance(title_obj, dict):
+                        title = title_obj.get('english') or title_obj.get('romaji') or title_obj.get('native') or "Unknown"
+                    
+                    cover_obj = item.get('coverImage', {})
+                    image = ""
+                    if isinstance(cover_obj, dict):
+                        image = cover_obj.get('large') or cover_obj.get('extraLarge') or ""
+
+                    results.append({
+                        "id": f"amvstr|{item.get('id', '')}",
+                        "title": title,
+                        "image": image,
+                        "type": item.get('format', 'TV')
+                    })
+                return results
+        except Exception as e:
+            print(f"[Provider Error] AMVSTR Search Failed: {e}")
         return None
 
     async def info(self, anime_id: str, client: httpx.AsyncClient):
-        clean_id = anime_id.replace("amvstr|", "")
-        res = await client.get(f"{self.BASE_URL}/info/{clean_id}")
-        if res.status_code == 200:
-            data = res.json()
-            episodes = [{"id": f"amvstr|{ep['id']}", "number": ep['number']} for ep in data.get("episodes", [])]
-            return {"provider": "AMVSTR SERVER", "episodes": episodes}
+        try:
+            clean_id = anime_id.replace("amvstr|", "")
+            res = await client.get(f"{self.BASE_URL}/info/{clean_id}", timeout=10.0)
+            if res.status_code == 200:
+                data = res.json()
+                episodes = []
+                for ep in data.get("episodes", []):
+                    episodes.append({
+                        "id": f"amvstr|{ep.get('id', '')}",
+                        "number": ep.get('number', 1)
+                    })
+                return {"provider": "AMVSTR SERVER", "episodes": episodes}
+        except Exception as e:
+            print(f"[Provider Error] AMVSTR Info Failed: {e}")
         return None
 
     async def stream(self, episode_id: str, client: httpx.AsyncClient):
-        clean_id = episode_id.replace("amvstr|", "")
-        res = await client.get(f"{self.BASE_URL}/stream/{clean_id}")
-        if res.status_code == 200:
-            url = res.json().get("stream", {}).get("multi", {}).get("main", {}).get("url")
-            if url: return {"sources": [{"url": url, "quality": "default"}]}
+        try:
+            clean_id = episode_id.replace("amvstr|", "")
+            res = await client.get(f"{self.BASE_URL}/stream/{clean_id}", timeout=10.0)
+            if res.status_code == 200:
+                data = res.json()
+                url = data.get("stream", {}).get("multi", {}).get("main", {}).get("url")
+                if url:
+                    return {"sources": [{"url": url, "quality": "default"}]}
+        except Exception as e:
+            print(f"[Provider Error] AMVSTR Stream Failed: {e}")
         return None
 
 class ProviderManager:
     def __init__(self):
-        # The engine cascades through these in order. If Direct fails, it hits AMVSTR.
         self.providers = [DirectExtractorProvider(), AMVSTRProvider()]
 
     async def search_all(self, query: str):
@@ -221,32 +261,44 @@ class ProviderManager:
             for provider in self.providers:
                 try:
                     results = await provider.search(query, client)
-                    if results: return {"results": results}
-                except Exception: continue
+                    if results and len(results) > 0:
+                        return {"results": results}
+                except Exception:
+                    continue
         return {"results": []}
 
     async def get_info(self, composite_id: str):
         async with httpx.AsyncClient(timeout=15.0) as client:
             for provider in self.providers:
-                if composite_id.startswith("direct|") and isinstance(provider, DirectExtractorProvider):
-                    return await provider.info(composite_id, client)
-                elif composite_id.startswith("amvstr|") and isinstance(provider, AMVSTRProvider):
-                    return await provider.info(composite_id, client)
-        return {"episodes": []}
+                try:
+                    if composite_id.startswith("direct|") and isinstance(provider, DirectExtractorProvider):
+                        data = await provider.info(composite_id, client)
+                        if data: return data
+                    elif composite_id.startswith("amvstr|") and isinstance(provider, AMVSTRProvider):
+                        data = await provider.info(composite_id, client)
+                        if data: return data
+                except Exception:
+                    continue
+        return {"episodes": [], "provider": "None"}
 
     async def get_stream(self, composite_id: str):
         async with httpx.AsyncClient(timeout=15.0) as client:
             for provider in self.providers:
-                if composite_id.startswith("direct|") and isinstance(provider, DirectExtractorProvider):
-                    return await provider.stream(composite_id, client)
-                elif composite_id.startswith("amvstr|") and isinstance(provider, AMVSTRProvider):
-                    return await provider.stream(composite_id, client)
-        raise HTTPException(status_code=502, detail="All layers failed to resolve stream link.")
+                try:
+                    if composite_id.startswith("direct|") and isinstance(provider, DirectExtractorProvider):
+                        data = await provider.stream(composite_id, client)
+                        if data: return data
+                    elif composite_id.startswith("amvstr|") and isinstance(provider, AMVSTRProvider):
+                        data = await provider.stream(composite_id, client)
+                        if data: return data
+                except Exception:
+                    continue
+        raise HTTPException(status_code=502, detail="All extraction nodes failed to parse streaming manifest links.")
 
 extension_manager = ProviderManager()
 
 # ==========================================
-# 4. FASTAPI ROUTES
+# 3. FASTAPI MOUNT PIECES
 # ==========================================
 app = FastAPI(title="Streaming Activity Backend")
 
@@ -278,7 +330,7 @@ async def serve_frontend():
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "healthy", "manager_active": True}
+    return {"status": "healthy", "manager_active": True, "postgres_active": IS_POSTGRES}
 
 @app.get("/api/search")
 async def search_anime(q: str):
@@ -303,7 +355,7 @@ async def get_user_history(user_id: str, anime_id: str):
     return get_progress(user_id, anime_id)
 
 # ==========================================
-# 5. WEBSOCKET SYNC
+# 4. WEBSOCKET SYNC LAYER
 # ==========================================
 class RoomManager:
     def __init__(self):
