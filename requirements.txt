@@ -4,4 +4,3 @@ httpx
 pydantic
 websockets
 psycopg2-binary
-pycryptodome
