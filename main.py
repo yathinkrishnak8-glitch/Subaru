@@ -2,15 +2,11 @@ import os
 import sqlite3
 import httpx
 import urllib.parse
-import base64
-import hashlib
-import json
 from contextlib import contextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from Crypto.Cipher import AES
 
 # ==========================================
 # 1. SELF-HEALING DATABASE CONFIGURATION
@@ -40,13 +36,10 @@ def init_db():
             """)
             conn.commit()
             conn.close()
-            print("[Database] PostgreSQL Initialized successfully.")
             return
-        except Exception as e:
-            print(f"[Database Warning] PostgreSQL initialization failed ({e}). Falling back to SQLite.")
+        except Exception:
             IS_POSTGRES = False
 
-    # SQLite Fallback Layer
     conn = sqlite3.connect("subaru_activity.db")
     cursor = conn.cursor()
     cursor.execute("""
@@ -61,7 +54,6 @@ def init_db():
     """)
     conn.commit()
     conn.close()
-    print("[Database] SQLite Initialized successfully.")
 
 @contextmanager
 def get_db_cursor():
@@ -117,8 +109,8 @@ def save_progress(user_id: str, anime_id: str, episode_num: int, progress: float
                                   progress_seconds=excluded.progress_seconds,
                                   updated_at=CURRENT_TIMESTAMP;
                 """, (str(user_id), str(anime_id), int(episode_num), float(progress)))
-    except Exception as e:
-        print(f"[Database Error] Failed to save record: {e}")
+    except Exception:
+        pass
 
 def get_progress(user_id: str, anime_id: str):
     try:
@@ -135,169 +127,143 @@ def get_progress(user_id: str, anime_id: str):
     return {"episode_num": 1, "progress_seconds": 0.0}
 
 # ==========================================
-# 2. DEFENSIVE PROVIDER ARCHITECTURE
+# 2. ANILIST GRAPHQL NATIVE SEARCH
 # ==========================================
-class BaseProvider:
-    async def search(self, query: str, client: httpx.AsyncClient): pass
-    async def info(self, anime_id: str, client: httpx.AsyncClient): pass
-    async def stream(self, episode_id: str, client: httpx.AsyncClient): pass
+async def search_anilist_graphql(query: str, client: httpx.AsyncClient):
+    """Bypasses Cloudflare blocks entirely by using the official public AniList API"""
+    url = "https://graphql.anilist.co"
+    graphql_query = """
+    query ($search: String) {
+      Page(page: 1, perPage: 24) {
+        media(search: $search, type: ANIME, sort: POPULARITY_DESC) {
+          id
+          title { english romaji userPreferred native }
+          coverImage { extraLarge large }
+          format
+          status
+          averageScore
+        }
+      }
+    }
+    """
+    try:
+        res = await client.post(url, json={"query": graphql_query, "variables": {"search": query}}, timeout=10.0)
+        if res.status_code == 200:
+            data = res.json()
+            results = []
+            for item in data.get("data", {}).get("Page", {}).get("media", []):
+                t = item.get("title", {})
+                title = t.get("english") or t.get("romaji") or t.get("userPreferred") or t.get("native") or "Unknown"
+                
+                img = item.get("coverImage", {})
+                image = img.get("extraLarge") or img.get("large") or ""
+                
+                results.append({
+                    "id": f"anilist|{item['id']}",
+                    "title": title,
+                    "image": image,
+                    "type": item.get("format", "TV"),
+                    "status": item.get("status", "UNKNOWN"),
+                    "rating": item.get("averageScore", "")
+                })
+            return results
+    except Exception as e:
+        print(f"[GraphQL Error] {e}")
+    return []
 
-class DirectExtractorProvider(BaseProvider):
-    API_URL = "https://api-consumet.vercel.app/anime/zoro"
-    
-    async def search(self, query: str, client: httpx.AsyncClient):
+# ==========================================
+# 3. STREAMING PROVIDER CASCADE
+# ==========================================
+class ConsumetMetaProvider:
+    def __init__(self, provider_name):
+        self.provider = provider_name
+        self.mirrors = [
+            "https://api-consumet.vercel.app/meta/anilist",
+            "https://consumet-api.onrender.com/meta/anilist",
+            "https://api.consumet.org/meta/anilist"
+        ]
+
+    async def info(self, anilist_id: str, client: httpx.AsyncClient):
+        for base_url in self.mirrors:
+            try:
+                res = await client.get(f"{base_url}/info/{anilist_id}?provider={self.provider}", timeout=10.0)
+                if res.status_code == 200:
+                    data = res.json()
+                    episodes = [{"id": f"consumet|{self.provider}|{ep['id']}", "number": ep.get('number', 1)} for ep in data.get("episodes", [])]
+                    if episodes:
+                        return {"provider": f"Consumet ({self.provider.upper()})", "episodes": episodes}
+            except Exception:
+                continue
+        return None
+
+class AMVSTRProvider:
+    async def info(self, anilist_id: str, client: httpx.AsyncClient):
         try:
-            res = await client.get(f"{self.API_URL}/{urllib.parse.quote(query)}", timeout=8.0)
+            res = await client.get(f"https://api.amvstr.me/api/v2/info/{anilist_id}", timeout=10.0)
             if res.status_code == 200:
                 data = res.json()
-                results = []
-                for item in data.get("results", []):
-                    results.append({
-                        "id": f"direct|{item.get('id', '')}",
-                        "title": item.get('title', 'Unknown Title'),
-                        "image": item.get('image', ''),
-                        "type": item.get('type', 'TV')
-                    })
-                return results
-        except Exception as e:
-            print(f"[Provider Error] Direct Extractor Search Failed: {e}")
+                episodes = [{"id": f"amvstr|{ep['id']}", "number": ep.get('number', 1)} for ep in data.get("episodes", [])]
+                if episodes:
+                    return {"provider": "AMVSTR NATIVE", "episodes": episodes}
+        except Exception:
+            pass
         return None
 
-    async def info(self, anime_id: str, client: httpx.AsyncClient):
-        try:
-            clean_id = anime_id.replace("direct|", "")
-            res = await client.get(f"{self.API_URL}/info?id={clean_id}", timeout=10.0)
-            if res.status_code == 200:
-                data = res.json()
-                episodes = []
-                for ep in data.get("episodes", []):
-                    episodes.append({
-                        "id": f"direct|{ep.get('id', '')}",
-                        "number": ep.get('number', 1)
-                    })
-                return {"provider": "RAW DECRYPTION ENGINE", "episodes": episodes}
-        except Exception as e:
-            print(f"[Provider Error] Direct Extractor Info Failed: {e}")
-        return None
-
-    async def stream(self, episode_id: str, client: httpx.AsyncClient):
-        try:
-            clean_id = episode_id.replace("direct|", "")
-            res = await client.get(f"{self.API_URL}/watch?episodeId={clean_id}", timeout=10.0)
-            if res.status_code == 200:
-                return res.json()
-        except Exception as e:
-            print(f"[Provider Error] Direct Extractor Stream Failed: {e}")
-        return None
-
-class AMVSTRProvider(BaseProvider):
-    BASE_URL = "https://api.amvstr.me/api/v2"
-    
-    async def search(self, query: str, client: httpx.AsyncClient):
-        try:
-            res = await client.get(f"{self.BASE_URL}/search?q={urllib.parse.quote(query)}", timeout=8.0)
-            if res.status_code == 200:
-                data = res.json()
-                results = []
-                for item in data.get("results", []):
-                    title_obj = item.get('title', {})
-                    title = "Unknown"
-                    if isinstance(title_obj, dict):
-                        title = title_obj.get('english') or title_obj.get('romaji') or title_obj.get('native') or "Unknown"
-                    
-                    cover_obj = item.get('coverImage', {})
-                    image = ""
-                    if isinstance(cover_obj, dict):
-                        image = cover_obj.get('large') or cover_obj.get('extraLarge') or ""
-
-                    results.append({
-                        "id": f"amvstr|{item.get('id', '')}",
-                        "title": title,
-                        "image": image,
-                        "type": item.get('format', 'TV')
-                    })
-                return results
-        except Exception as e:
-            print(f"[Provider Error] AMVSTR Search Failed: {e}")
-        return None
-
-    async def info(self, anime_id: str, client: httpx.AsyncClient):
-        try:
-            clean_id = anime_id.replace("amvstr|", "")
-            res = await client.get(f"{self.BASE_URL}/info/{clean_id}", timeout=10.0)
-            if res.status_code == 200:
-                data = res.json()
-                episodes = []
-                for ep in data.get("episodes", []):
-                    episodes.append({
-                        "id": f"amvstr|{ep.get('id', '')}",
-                        "number": ep.get('number', 1)
-                    })
-                return {"provider": "AMVSTR SERVER", "episodes": episodes}
-        except Exception as e:
-            print(f"[Provider Error] AMVSTR Info Failed: {e}")
-        return None
-
-    async def stream(self, episode_id: str, client: httpx.AsyncClient):
-        try:
-            clean_id = episode_id.replace("amvstr|", "")
-            res = await client.get(f"{self.BASE_URL}/stream/{clean_id}", timeout=10.0)
-            if res.status_code == 200:
-                data = res.json()
-                url = data.get("stream", {}).get("multi", {}).get("main", {}).get("url")
-                if url:
-                    return {"sources": [{"url": url, "quality": "default"}]}
-        except Exception as e:
-            print(f"[Provider Error] AMVSTR Stream Failed: {e}")
-        return None
-
-class ProviderManager:
+class MasterRouter:
     def __init__(self):
-        self.providers = [DirectExtractorProvider(), AMVSTRProvider()]
-
-    async def search_all(self, query: str):
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            for provider in self.providers:
-                try:
-                    results = await provider.search(query, client)
-                    if results and len(results) > 0:
-                        return {"results": results}
-                except Exception:
-                    continue
-        return {"results": []}
+        # The cascade order: Zoro -> AMVSTR -> Gogoanime
+        self.info_providers = [
+            ConsumetMetaProvider("zoro"),
+            AMVSTRProvider(),
+            ConsumetMetaProvider("gogoanime")
+        ]
 
     async def get_info(self, composite_id: str):
+        clean_id = composite_id.replace("anilist|", "")
         async with httpx.AsyncClient(timeout=15.0) as client:
-            for provider in self.providers:
-                try:
-                    if composite_id.startswith("direct|") and isinstance(provider, DirectExtractorProvider):
-                        data = await provider.info(composite_id, client)
-                        if data: return data
-                    elif composite_id.startswith("amvstr|") and isinstance(provider, AMVSTRProvider):
-                        data = await provider.info(composite_id, client)
-                        if data: return data
-                except Exception:
-                    continue
+            for p in self.info_providers:
+                data = await p.info(clean_id, client)
+                if data and data.get("episodes"):
+                    return data
         return {"episodes": [], "provider": "None"}
 
     async def get_stream(self, composite_id: str):
+        parts = composite_id.split("|", 2)
+        engine = parts[0]
+        
         async with httpx.AsyncClient(timeout=15.0) as client:
-            for provider in self.providers:
+            if engine == "consumet":
+                provider_name = parts[1]
+                ep_id = urllib.parse.quote(parts[2], safe='')
+                mirrors = [
+                    "https://api-consumet.vercel.app/meta/anilist",
+                    "https://consumet-api.onrender.com/meta/anilist"
+                ]
+                for base in mirrors:
+                    try:
+                        res = await client.get(f"{base}/watch/{ep_id}?provider={provider_name}")
+                        if res.status_code == 200:
+                            return res.json()
+                    except Exception:
+                        continue
+                        
+            elif engine == "amvstr":
+                ep_id = parts[1]
                 try:
-                    if composite_id.startswith("direct|") and isinstance(provider, DirectExtractorProvider):
-                        data = await provider.stream(composite_id, client)
-                        if data: return data
-                    elif composite_id.startswith("amvstr|") and isinstance(provider, AMVSTRProvider):
-                        data = await provider.stream(composite_id, client)
-                        if data: return data
+                    res = await client.get(f"https://api.amvstr.me/api/v2/stream/{ep_id}")
+                    if res.status_code == 200:
+                        url = res.json().get("stream", {}).get("multi", {}).get("main", {}).get("url")
+                        if url:
+                            return {"sources": [{"url": url, "quality": "default"}]}
                 except Exception:
-                    continue
-        raise HTTPException(status_code=502, detail="All extraction nodes failed to parse streaming manifest links.")
+                    pass
+                    
+        raise HTTPException(status_code=502, detail="Stream resolution failed across all nodes.")
 
-extension_manager = ProviderManager()
+router = MasterRouter()
 
 # ==========================================
-# 3. FASTAPI MOUNT PIECES
+# 4. FASTAPI ROUTES
 # ==========================================
 app = FastAPI(title="Streaming Activity Backend")
 
@@ -329,20 +295,22 @@ async def serve_frontend():
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "healthy", "manager_active": True, "postgres_active": IS_POSTGRES}
+    return {"status": "healthy"}
 
 @app.get("/api/search")
 async def search_anime(q: str):
     if not q or q == "ping": return {"status": "active"}
-    return await extension_manager.search_all(q)
+    async with httpx.AsyncClient() as client:
+        results = await search_anilist_graphql(q, client)
+        return {"results": results}
 
 @app.get("/api/anime/{anime_id:path}")
 async def get_anime_details(anime_id: str):
-    return await extension_manager.get_info(anime_id)
+    return await router.get_info(anime_id)
 
 @app.get("/api/stream")
 async def get_stream_urls(episode_id: str):
-    return await extension_manager.get_stream(episode_id)
+    return await router.get_stream(episode_id)
 
 @app.post("/api/history/save")
 async def save_user_history(data: ProgressPayload):
@@ -354,7 +322,7 @@ async def get_user_history(user_id: str, anime_id: str):
     return get_progress(user_id, anime_id)
 
 # ==========================================
-# 4. WEBSOCKET SYNC LAYER
+# 5. WEBSOCKET SYNC
 # ==========================================
 class RoomManager:
     def __init__(self):
