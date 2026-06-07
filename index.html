@@ -36,7 +36,7 @@
         </div>
         <div class="flex-none w-full max-w-xs sm:max-w-sm md:max-w-md ml-2">
             <div class="join w-full shadow-md rounded-xl overflow-hidden border border-base-100">
-                <input id="searchInput" type="text" placeholder="Type title keywords..." class="input input-sm sm:input-md bg-base-100 join-item w-full focus:outline-none focus:border-primary text-xs sm:text-sm font-semibold px-3" onkeyup="if(event.key === 'Enter') executeSearch()" />
+                <input id="searchInput" type="text" placeholder="Search AniList database..." class="input input-sm sm:input-md bg-base-100 join-item w-full focus:outline-none focus:border-primary text-xs sm:text-sm font-semibold px-3" onkeyup="if(event.key === 'Enter') executeSearch()" />
                 <button onclick="executeSearch()" class="btn btn-sm sm:btn-md btn-primary join-item px-4 sm:px-6">
                     <i class="fa-solid fa-magnifying-glass text-xs sm:text-sm"></i>
                 </button>
@@ -55,16 +55,9 @@
                     <div>
                         <div class="flex items-center gap-2 flex-wrap mb-0.5">
                             <span class="badge badge-primary badge-xs font-bold tracking-wider uppercase">Active Session</span>
-                            <span id="activeMetaProvider" class="badge badge-outline badge-neutral badge-xs font-medium text-neutral-content opacity-80">Provider: AniList Meta</span>
+                            <span id="activeMetaProvider" class="badge badge-outline badge-neutral badge-xs font-bold text-neutral-content opacity-80 uppercase tracking-widest">Routing...</span>
                         </div>
                         <h3 id="playingTitle" class="font-extrabold text-sm sm:text-md text-white tracking-tight line-clamp-1">Initializing content stream pipeline...</h3>
-                    </div>
-                </div>
-                <div class="flex items-center justify-between w-full sm:w-auto gap-4 bg-base-100 p-1.5 px-3 rounded-xl border border-base-100">
-                    <span class="text-[11px] font-black uppercase tracking-widest text-neutral-content/70">Audio Track</span>
-                    <div class="join">
-                        <button id="btnSub" onclick="setAudioFormat('sub')" class="btn btn-xs join-item px-3 font-bold transition-all">SUB</button>
-                        <button id="btnDub" onclick="setAudioFormat('dub')" class="btn btn-xs join-item px-3 font-bold transition-all">DUB</button>
                     </div>
                 </div>
             </div>
@@ -100,9 +93,9 @@
         let art = null;
         let currentAnimeId = "";
         let currentEpisodeNum = 1;
-        let currentAudioType = "sub"; 
         let currentEpisodeList = [];
         let internalSyncChange = false;
+        let activeProvider = "fallback";
 
         window.addEventListener('DOMContentLoaded', async () => {
             await initializeAppLifecycle();
@@ -227,13 +220,17 @@
                 
                 currentEpisodeList = data.episodes || [];
                 
+                // Track which provider won the fallback race
+                activeProvider = data._active_provider || "unknown";
+                document.getElementById('activeMetaProvider').innerText = `Provider: ${activeProvider}`;
+                
                 if (!currentEpisodeList || currentEpisodeList.length === 0) {
                     grid.className = "grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 sm:gap-5 transition-all";
                     grid.innerHTML = `
                         <div class="col-span-full text-center py-16 bg-base-200 rounded-2xl border border-base-100 p-4">
                             <i class="fa-solid fa-circle-exclamation text-3xl text-warning mb-2"></i>
                             <h3 class="text-sm font-bold text-white">Episodes Sync Interrupted</h3>
-                            <p class="text-xs text-neutral-content/60 mt-1 max-w-sm mx-auto mb-4">The streaming cluster couldn't resolve video manifests for this specific record via the default provider.</p>
+                            <p class="text-xs text-neutral-content/60 mt-1 max-w-sm mx-auto mb-4">All backend extraction providers failed to locate valid video manifests for this title.</p>
                             <button onclick="executeSearch()" class="btn btn-xs btn-outline btn-neutral rounded-lg"><i class="fa-solid fa-arrow-left"></i> Return to Results</button>
                         </div>`;
                     return;
@@ -243,9 +240,6 @@
                 const historyData = await historyRes.json();
                 
                 currentEpisodeNum = historyData.episode_num;
-                currentAudioType = historyData.sub_or_dub || "sub";
-                
-                updateAudioControlState();
                 renderEpisodeCatalog(historyData.progress_seconds);
             } catch (err) {
                 grid.className = "grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 sm:gap-5 transition-all";
@@ -287,9 +281,11 @@
             window.scrollTo({ top: 0, behavior: 'smooth' });
 
             try {
-                const res = await fetch(`${BACKEND_URL}/api/stream/${episodeId}`);
+                // Safely requesting stream links using query parameters instead of fragile path mappings
+                const res = await fetch(`${BACKEND_URL}/api/stream?episode_id=${encodeURIComponent(episodeId)}&provider=${activeProvider}`);
                 const data = await res.json();
-                const source = data.sources.find(s => s.quality === "default") || data.sources[0];
+                
+                const source = data.sources.find(s => s.quality === "default") || data.sources.find(s => s.quality === "auto") || data.sources[0];
                 setupVideoPlayer(source.url, startTime);
             } catch (err) {
                 alert("Decryption parsing failed downloading transport manifest configurations.");
@@ -343,37 +339,12 @@
                                 user_id: currentUser.id,
                                 anime_id: currentAnimeId,
                                 episode_num: currentEpisodeNum,
-                                sub_or_dub: currentAudioType,
                                 progress_seconds: art.currentTime
                             })
                         }).catch(() => {});
                     }
                 }, 10000);
             });
-        }
-
-        function setAudioFormat(format) {
-            if (currentAudioType === format) return;
-            currentAudioType = format;
-            updateAudioControlState();
-            
-            const targetEp = currentEpisodeList.find(ep => ep.number === currentEpisodeNum);
-            if (targetEp) {
-                launchStream(targetEp.id, currentEpisodeNum, art ? art.currentTime : 0);
-            }
-        }
-
-        function updateAudioControlState() {
-            const btnSub = document.getElementById('btnSub');
-            const btnDub = document.getElementById('btnDub');
-            
-            if (currentAudioType === 'sub') {
-                btnSub.className = "btn btn-xs btn-primary font-black px-3";
-                btnDub.className = "btn btn-xs btn-neutral font-medium px-3 opacity-60";
-            } else {
-                btnSub.className = "btn btn-xs btn-neutral font-medium px-3 opacity-60";
-                btnDub.className = "btn btn-xs btn-primary font-black px-3";
-            }
         }
     </script>
 </body>
