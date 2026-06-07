@@ -98,7 +98,7 @@ def save_progress(user_id: str, anime_id: str, episode_num: int, sub_or_dub: str
                                   updated_at=CURRENT_TIMESTAMP;
                 """, (user_id, anime_id, episode_num, sub_or_dub, progress))
     except Exception as e:
-        print(f"[Subaru Database Error] Failed to commit history record: {e}")
+        print(f"[Database Error] Failed to commit history record: {e}")
 
 def get_progress(user_id: str, anime_id: str):
     try:
@@ -111,13 +111,13 @@ def get_progress(user_id: str, anime_id: str):
             if row:
                 return {"episode_num": row[0], "sub_or_dub": row[1], "progress_seconds": row[2]}
     except Exception as e:
-        print(f"[Subaru Database Error] History retrieval failure: {e}")
+        print(f"[Database Error] History retrieval failure: {e}")
     return {"episode_num": 1, "sub_or_dub": "sub", "progress_seconds": 0.0}
 
 # ==========================================
 # 2. FASTAPI WEB SERVER CORE
 # ==========================================
-app = FastAPI(title="Subaru Streaming Activity Backend")
+app = FastAPI(title="Streaming Activity Backend")
 
 app.add_middleware(
     CORSMiddleware,
@@ -142,8 +142,6 @@ class ProgressPayload(BaseModel):
 # 3. ENDPOINTS, FALLBACKS & FRONTEND SERVING
 # ==========================================
 
-# Swapped to the Meta AniList routing. This prevents direct IP bans 
-# from single providers by routing searches through the AniList database first.
 API_MIRRORS = [
     "https://api-consumet.vercel.app/meta/anilist",
     "https://consumet-api.onrender.com/meta/anilist",
@@ -151,13 +149,11 @@ API_MIRRORS = [
 ]
 
 async def fetch_from_mirrors(endpoint: str):
-    """Iterates through API mirrors until a valid, populated response is secured."""
     async with httpx.AsyncClient(timeout=8.0) as client:
         for base_url in API_MIRRORS:
             try:
                 url = f"{base_url}{endpoint}"
                 response = await client.get(url)
-                
                 if response.status_code == 200:
                     data = response.json()
                     if "results" in data and len(data["results"]) == 0:
@@ -165,7 +161,6 @@ async def fetch_from_mirrors(endpoint: str):
                     return data
             except Exception:
                 continue
-                
     raise HTTPException(status_code=502, detail="All extraction mirrors are currently blocked or rate-limited.")
 
 @app.get("/")
@@ -174,30 +169,25 @@ async def serve_frontend():
         with open("index.html", "r", encoding="utf-8") as file:
             return HTMLResponse(content=file.read(), status_code=200)
     except FileNotFoundError:
-        return HTMLResponse(
-            content="<h1>Error: index.html missing!</h1><p>Make sure index.html is uploaded directly next to your main.py file.</p>", 
-            status_code=404
-        )
+        return HTMLResponse(content="<h1>Error: index.html missing!</h1>", status_code=404)
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "healthy", "service": "subaru-stream", "database_engine": "postgres" if IS_POSTGRES else "sqlite"}
+    return {"status": "healthy", "database_engine": "postgres" if IS_POSTGRES else "sqlite"}
 
 @app.get("/api/search")
 async def search_anime(q: str):
     if not q or q == "ping":
         return {"status": "active"}
-    # AniList uses standard query routing for search
     return await fetch_from_mirrors(f"/{q}")
 
 @app.get("/api/anime/{anime_id}")
 async def get_anime_details(anime_id: str):
-    # AniList requires 'info/' prefix
-    return await fetch_from_mirrors(f"/info/{anime_id}")
+    # Enforces Zoro fallback to prevent empty episode arrays
+    return await fetch_from_mirrors(f"/info/{anime_id}?provider=zoro")
 
 @app.get("/api/stream/{episode_id}")
 async def get_stream_urls(episode_id: str):
-    # AniList requires 'watch/' prefix
     return await fetch_from_mirrors(f"/watch/{episode_id}")
 
 @app.post("/api/history/save")
