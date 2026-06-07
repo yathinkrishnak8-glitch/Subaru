@@ -8,7 +8,6 @@ import json
 from contextlib import contextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import HTMLResponse
-from fastapi.middleware.rules import CORSMiddleware  # Fixed import path alignment if needed
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from Crypto.Cipher import AES
