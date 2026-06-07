@@ -112,7 +112,138 @@ def get_progress(user_id: str, anime_id: str):
     return {"episode_num": 1, "progress_seconds": 0.0}
 
 # ==========================================
-# 2. FASTAPI WEB SERVER CORE
+# 2. PYTHON EXTENSION MANAGER CORE
+# ==========================================
+class BaseExtension:
+    """Base class for Python-native streaming providers"""
+    async def search(self, query: str, client: httpx.AsyncClient): pass
+    async def info(self, anime_id: str, client: httpx.AsyncClient): pass
+    async def stream(self, episode_id: str, client: httpx.AsyncClient): pass
+
+class AMVSTRExtension(BaseExtension):
+    """Primary Extension: Uses the AMVSTR API (High reliability, Cloudflare bypassed)"""
+    BASE_URL = "https://api.amvstr.me/api/v2"
+    
+    async def search(self, query: str, client: httpx.AsyncClient):
+        res = await client.get(f"{self.BASE_URL}/search?q={urllib.parse.quote(query)}")
+        if res.status_code == 200:
+            data = res.json()
+            results = []
+            for item in data.get("results", []):
+                results.append({
+                    "id": f"amvstr|{item.get('id')}", # Tag ID with provider for routing later
+                    "title": item.get("title", {}).get("english") or item.get("title", {}).get("romaji") or "Unknown",
+                    "image": item.get("coverImage", {}).get("extraLarge") or item.get("coverImage", {}).get("large"),
+                    "type": item.get("format", "TV")
+                })
+            return results
+        return None
+
+    async def info(self, anime_id: str, client: httpx.AsyncClient):
+        clean_id = anime_id.replace("amvstr|", "")
+        res = await client.get(f"{self.BASE_URL}/info/{clean_id}")
+        if res.status_code == 200:
+            data = res.json()
+            episodes = []
+            for ep in data.get("episodes", []):
+                episodes.append({
+                    "id": f"amvstr|{ep.get('id')}",
+                    "number": ep.get("number")
+                })
+            return {"provider": "AMVSTR", "episodes": episodes}
+        return None
+
+    async def stream(self, episode_id: str, client: httpx.AsyncClient):
+        clean_id = episode_id.replace("amvstr|", "")
+        res = await client.get(f"{self.BASE_URL}/stream/{clean_id}")
+        if res.status_code == 200:
+            data = res.json()
+            # AMVSTR returns direct stream objects
+            url = data.get("stream", {}).get("multi", {}).get("main", {}).get("url")
+            if url:
+                return {"sources": [{"url": url, "quality": "default"}]}
+        return None
+
+class ConsumetExtension(BaseExtension):
+    """Fallback Extension: Uses community proxies for Zoro/Gogo"""
+    BASE_URL = "https://api-consumet.vercel.app/anime/zoro"
+
+    async def search(self, query: str, client: httpx.AsyncClient):
+        res = await client.get(f"{self.BASE_URL}/{urllib.parse.quote(query)}")
+        if res.status_code == 200:
+            data = res.json()
+            results = []
+            for item in data.get("results", []):
+                results.append({
+                    "id": f"consumet|{item.get('id')}",
+                    "title": item.get("title", "Unknown"),
+                    "image": item.get("image", ""),
+                    "type": item.get("type", "TV")
+                })
+            return results
+        return None
+
+    async def info(self, anime_id: str, client: httpx.AsyncClient):
+        clean_id = anime_id.replace("consumet|", "")
+        res = await client.get(f"{self.BASE_URL}/info?id={clean_id}")
+        if res.status_code == 200:
+            data = res.json()
+            episodes = []
+            for ep in data.get("episodes", []):
+                episodes.append({
+                    "id": f"consumet|{ep.get('id')}",
+                    "number": ep.get("number")
+                })
+            return {"provider": "Consumet (Zoro)", "episodes": episodes}
+        return None
+
+    async def stream(self, episode_id: str, client: httpx.AsyncClient):
+        clean_id = episode_id.replace("consumet|", "")
+        res = await client.get(f"{self.BASE_URL}/watch?episodeId={clean_id}")
+        if res.status_code == 200:
+            return res.json()
+        return None
+
+class ExtensionManager:
+    """Handles routing requests to active extensions"""
+    def __init__(self):
+        # The engine will attempt to load from these in order
+        self.extensions = [AMVSTRExtension(), ConsumetExtension()]
+
+    async def search_all(self, query: str):
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            for ext in self.extensions:
+                try:
+                    results = await ext.search(query, client)
+                    if results and len(results) > 0:
+                        return {"results": results}
+                except Exception:
+                    continue
+        return {"results": []}
+
+    async def get_info(self, composite_id: str):
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            for ext in self.extensions:
+                # Route the info request to the specific extension that found it
+                if composite_id.startswith("amvstr|") and isinstance(ext, AMVSTRExtension):
+                    return await ext.info(composite_id, client)
+                elif composite_id.startswith("consumet|") and isinstance(ext, ConsumetExtension):
+                    return await ext.info(composite_id, client)
+        return {"episodes": []}
+
+    async def get_stream(self, composite_id: str):
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            for ext in self.extensions:
+                if composite_id.startswith("amvstr|") and isinstance(ext, AMVSTRExtension):
+                    return await ext.stream(composite_id, client)
+                elif composite_id.startswith("consumet|") and isinstance(ext, ConsumetExtension):
+                    return await ext.stream(composite_id, client)
+        raise HTTPException(status_code=502, detail="Failed to resolve stream link through extension manager.")
+
+extension_manager = ExtensionManager()
+
+# ==========================================
+# 3. FASTAPI SERVER CORE
 # ==========================================
 app = FastAPI(title="Streaming Activity Backend")
 
@@ -134,18 +265,6 @@ class ProgressPayload(BaseModel):
     episode_num: int
     progress_seconds: float
 
-# ==========================================
-# 3. ANILIST META SEARCH & PROVIDER FALLBACKS
-# ==========================================
-API_MIRRORS = [
-    "https://api-consumet.vercel.app/meta/anilist",
-    "https://consumet-api.onrender.com/meta/anilist",
-    "https://api.consumet.org/meta/anilist"
-]
-
-# The engine will loop through these until it successfully extracts an episode list
-PROVIDERS = ["zoro", "gogoanime", "animepahe", "enime"]
-
 @app.get("/")
 async def serve_frontend():
     try:
@@ -156,65 +275,21 @@ async def serve_frontend():
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "healthy", "database_engine": "postgres" if IS_POSTGRES else "sqlite"}
+    return {"status": "healthy", "manager_active": True}
 
 @app.get("/api/search")
 async def search_anime(q: str):
     if not q or q == "ping":
         return {"status": "active"}
-    
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        for base_url in API_MIRRORS:
-            try:
-                # Fuzzy search using AniList
-                safe_q = urllib.parse.quote(q)
-                url = f"{base_url}/{safe_q}"
-                response = await client.get(url)
-                if response.status_code == 200:
-                    data = response.json()
-                    if "results" in data and len(data["results"]) > 0:
-                        return data
-            except Exception:
-                continue
-    return {"results": []}
+    return await extension_manager.search_all(q)
 
-@app.get("/api/anime/{anime_id}")
+@app.get("/api/anime/{anime_id:path}") # :path allows the pipe | character to pass securely
 async def get_anime_details(anime_id: str):
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        # Multi-Provider Fallback Loop: Ensures episodes will load
-        for provider in PROVIDERS:
-            for base_url in API_MIRRORS:
-                try:
-                    url = f"{base_url}/info/{anime_id}?provider={provider}"
-                    response = await client.get(url)
-                    if response.status_code == 200:
-                        data = response.json()
-                        if "episodes" in data and len(data["episodes"]) > 0:
-                            # Attach the winning provider so the frontend knows which one to stream from
-                            data["_active_provider"] = provider
-                            return data
-                except Exception:
-                    continue
-    return {"episodes": []}
+    return await extension_manager.get_info(anime_id)
 
 @app.get("/api/stream")
-async def get_stream_urls(episode_id: str, provider: str = ""):
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        providers_to_try = [provider] if provider else PROVIDERS
-        for prov in providers_to_try:
-            for base_url in API_MIRRORS:
-                try:
-                    # Safe URL encoding prevents complex IDs (like Zoro's) from breaking the route
-                    safe_ep_id = urllib.parse.quote(episode_id, safe='')
-                    url = f"{base_url}/watch/{safe_ep_id}?provider={prov}"
-                    response = await client.get(url)
-                    if response.status_code == 200:
-                        data = response.json()
-                        if "sources" in data and len(data["sources"]) > 0:
-                            return data
-                except Exception:
-                    continue
-    raise HTTPException(status_code=502, detail="Failed to extract streaming links.")
+async def get_stream_urls(episode_id: str):
+    return await extension_manager.get_stream(episode_id)
 
 @app.post("/api/history/save")
 async def save_user_history(data: ProgressPayload):
