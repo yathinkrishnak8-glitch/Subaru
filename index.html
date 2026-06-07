@@ -23,20 +23,20 @@
             <span class="loading loading-ring loading-lg text-primary scale-125"></span>
             <i class="fa-solid fa-play text-xl text-primary animate-pulse"></i>
         </div>
-        <h2 class="text-lg font-black tracking-widest text-white uppercase mt-4 text-center">Synchronizing Engine</h2>
-        <p class="text-xs text-neutral-content/70 mt-1 text-center max-w-xs animate-pulse">Warming remote server dynos. Please allow up to 30 seconds...</p>
+        <h2 class="text-lg font-black tracking-widest text-white uppercase mt-4 text-center">Extension Engine</h2>
+        <p class="text-xs text-neutral-content/70 mt-1 text-center max-w-xs animate-pulse">Mounting Python extension providers... Please wait.</p>
     </div>
 
     <header class="navbar bg-base-200 border-b border-base-100 px-4 lg:px-8 sticky top-0 z-40 shadow-lg backdrop-blur-md bg-opacity-90">
         <div class="flex-1">
             <button onclick="location.reload()" class="btn btn-ghost normal-case p-0 hover:bg-transparent text-xl font-black tracking-tighter text-primary flex items-center gap-2">
                 <i class="fa-solid fa-square-rss text-2xl"></i>
-                <span class="text-white">STREAM</span><span class="text-primary font-light text-sm hidden sm:inline">META</span>
+                <span class="text-white">STREAM</span>
             </button>
         </div>
         <div class="flex-none w-full max-w-xs sm:max-w-sm md:max-w-md ml-2">
             <div class="join w-full shadow-md rounded-xl overflow-hidden border border-base-100">
-                <input id="searchInput" type="text" placeholder="Search AniList database..." class="input input-sm sm:input-md bg-base-100 join-item w-full focus:outline-none focus:border-primary text-xs sm:text-sm font-semibold px-3" onkeyup="if(event.key === 'Enter') executeSearch()" />
+                <input id="searchInput" type="text" placeholder="Search across extensions..." class="input input-sm sm:input-md bg-base-100 join-item w-full focus:outline-none focus:border-primary text-xs sm:text-sm font-semibold px-3" onkeyup="if(event.key === 'Enter') executeSearch()" />
                 <button onclick="executeSearch()" class="btn btn-sm sm:btn-md btn-primary join-item px-4 sm:px-6">
                     <i class="fa-solid fa-magnifying-glass text-xs sm:text-sm"></i>
                 </button>
@@ -66,7 +66,7 @@
         <div class="flex items-center justify-between mb-4 sm:mb-6" id="sectionHeaderContainer">
             <div class="flex items-center gap-2">
                 <div class="h-5 w-1 bg-primary rounded-full"></div>
-                <h2 id="sectionTitle" class="text-sm sm:text-md font-black tracking-wider uppercase text-white">Media Catalog Explorer</h2>
+                <h2 id="sectionTitle" class="text-sm sm:text-md font-black tracking-wider uppercase text-white">Extension Dashboard</h2>
             </div>
             <div id="headerActions"></div>
         </div>
@@ -74,10 +74,10 @@
         <div id="contentGrid" class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 sm:gap-5 transition-all">
             <div class="col-span-full text-center py-16 sm:py-24 bg-base-200 rounded-2xl border border-base-100 p-4 shadow-inner">
                 <div class="w-14 h-14 bg-base-100 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-neutral/20 shadow-sm text-neutral-content/40">
-                    <i class="fa-solid fa-wand-magic-sparkles text-2xl"></i>
+                    <i class="fa-solid fa-plug text-2xl"></i>
                 </div>
-                <h3 class="text-sm sm:text-md font-bold text-neutral-content">Search Engine Ready</h3>
-                <p class="text-xs text-neutral-content/50 mt-1 max-w-xs mx-auto px-4">Input keyword terms in the navigation bar to parse high-density indexes directly through your AniList backend cluster.</p>
+                <h3 class="text-sm sm:text-md font-bold text-neutral-content">Extension Manager Ready</h3>
+                <p class="text-xs text-neutral-content/50 mt-1 max-w-xs mx-auto px-4">Search terms are automatically routed through all active Python scraping extensions until a match is found.</p>
             </div>
         </div>
     </main>
@@ -95,7 +95,6 @@
         let currentEpisodeNum = 1;
         let currentEpisodeList = [];
         let internalSyncChange = false;
-        let activeProvider = "fallback";
 
         window.addEventListener('DOMContentLoaded', async () => {
             await initializeAppLifecycle();
@@ -152,7 +151,7 @@
             const query = document.getElementById('searchInput').value;
             if (!query) return;
             
-            document.getElementById('sectionTitle').innerText = "Query Matches";
+            document.getElementById('sectionTitle').innerText = "Extension Results";
             document.getElementById('headerActions').innerHTML = '';
             const grid = document.getElementById('contentGrid');
             
@@ -168,97 +167,87 @@
                     grid.innerHTML = `
                         <div class="col-span-full text-center py-16 text-neutral-content">
                             <i class="fa-solid fa-box-open text-3xl mb-2 opacity-30"></i>
-                            <p class="text-xs font-bold">No indices cataloged matching that phrase query.</p>
+                            <p class="text-xs font-bold">No items found across active extensions.</p>
                         </div>`;
                     return;
                 }
 
                 data.results.forEach(anime => {
-                    const titleString = anime.title.english || anime.title.romaji || anime.title.userPreferred || anime.title.native || "Unknown Title";
-                    const ratingValue = anime.rating ? `${anime.rating}%` : 'N/A';
-                    const formatType = anime.type || 'TV';
-                    const statusText = anime.status || 'Unknown';
+                    const typeBadge = anime.type ? `<span class="badge bg-neutral-900/80 border-none backdrop-blur-md font-black text-[9px] px-1.5 py-0.5 text-white shadow-sm uppercase">${anime.type}</span>` : '';
 
                     grid.innerHTML += `
                         <div class="group bg-base-200 overflow-hidden shadow-md cursor-pointer hover:shadow-xl border border-base-100 hover:border-primary/40 transition-all duration-300 relative rounded-xl flex flex-col" onclick="loadAnimeDetails('${anime.id}')">
                             <div class="absolute top-1.5 left-1.5 z-10 flex flex-col gap-1 pointer-events-none">
-                                <span class="badge bg-neutral-900/80 border-none backdrop-blur-md font-extrabold text-[9px] px-1.5 py-0.5 text-accent shadow-sm"><i class="fa-solid fa-star text-[8px] mr-0.5"></i>${ratingValue}</span>
-                                <span class="badge bg-neutral-900/80 border-none backdrop-blur-md font-black text-[9px] px-1.5 py-0.5 text-white shadow-sm uppercase">${formatType}</span>
+                                ${typeBadge}
                             </div>
                             
                             <figure class="overflow-hidden aspect-[11/16] bg-neutral-900 relative">
                                 <img src="${anime.image}" class="object-cover h-full w-full group-hover:scale-105 transition-all duration-500" loading="lazy" />
                                 <div class="absolute inset-0 bg-gradient-to-t from-base-900 via-base-900/10 to-transparent opacity-80"></div>
-                                
-                                <div class="absolute bottom-1 right-1 left-1 flex items-center justify-between text-[9px] bg-base-900/70 p-1 rounded backdrop-blur-sm">
-                                    <span class="font-bold text-neutral-content tracking-tight uppercase max-w-[60%] truncate">${statusText}</span>
-                                    <span class="text-primary font-black"><i class="fa-solid fa-tv mr-0.5"></i>SRC</span>
-                                </div>
                             </figure>
                             
                             <div class="p-2 flex-1 flex flex-col justify-between">
-                                <h2 class="font-bold text-xs tracking-tight text-white line-clamp-2 min-h-[2rem] group-hover:text-primary transition-colors leading-tight">${titleString}</h2>
+                                <h2 class="font-bold text-xs tracking-tight text-white line-clamp-2 min-h-[2rem] group-hover:text-primary transition-colors leading-tight">${anime.title}</h2>
                             </div>
                         </div>`;
                 });
             } catch (err) {
-                grid.innerHTML = `<div class="col-span-full text-error text-center py-10 text-xs font-bold"><i class="fa-solid fa-triangle-exclamation mr-1"></i> Data-plane communication error.</div>`;
+                grid.innerHTML = `<div class="col-span-full text-error text-center py-10 text-xs font-bold"><i class="fa-solid fa-triangle-exclamation mr-1"></i> Provider gateway timeout.</div>`;
             }
         }
 
         async function loadAnimeDetails(animeId) {
             currentAnimeId = animeId;
-            document.getElementById('sectionTitle').innerText = "Processing Index Structures...";
+            document.getElementById('sectionTitle').innerText = "Extracting Index...";
             const grid = document.getElementById('contentGrid');
             
             grid.className = "block w-full transition-all space-y-4";
             grid.innerHTML = `<div class="text-center py-16"><span class="loading loading-ring loading-md text-primary"></span></div>`;
             
             try {
-                const res = await fetch(`${BACKEND_URL}/api/anime/${animeId}`);
+                // Ensure | characters pass safely
+                const safeId = encodeURIComponent(animeId);
+                const res = await fetch(`${BACKEND_URL}/api/anime/${safeId}`);
                 const data = await res.json();
                 
                 currentEpisodeList = data.episodes || [];
-                
-                // Track which provider won the fallback race
-                activeProvider = data._active_provider || "unknown";
-                document.getElementById('activeMetaProvider').innerText = `Provider: ${activeProvider}`;
+                document.getElementById('activeMetaProvider').innerText = `EXT: ${data.provider || "Unknown"}`;
                 
                 if (!currentEpisodeList || currentEpisodeList.length === 0) {
                     grid.className = "grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 sm:gap-5 transition-all";
                     grid.innerHTML = `
                         <div class="col-span-full text-center py-16 bg-base-200 rounded-2xl border border-base-100 p-4">
                             <i class="fa-solid fa-circle-exclamation text-3xl text-warning mb-2"></i>
-                            <h3 class="text-sm font-bold text-white">Episodes Sync Interrupted</h3>
-                            <p class="text-xs text-neutral-content/60 mt-1 max-w-sm mx-auto mb-4">All backend extraction providers failed to locate valid video manifests for this title.</p>
+                            <h3 class="text-sm font-bold text-white">Data Missing</h3>
+                            <p class="text-xs text-neutral-content/60 mt-1 max-w-sm mx-auto mb-4">The extension successfully mapped the title, but no stream files are currently hosted for it.</p>
                             <button onclick="executeSearch()" class="btn btn-xs btn-outline btn-neutral rounded-lg"><i class="fa-solid fa-arrow-left"></i> Return to Results</button>
                         </div>`;
                     return;
                 }
                 
-                const historyRes = await fetch(`${BACKEND_URL}/api/history/get?user_id=${currentUser.id}&anime_id=${animeId}`);
+                const historyRes = await fetch(`${BACKEND_URL}/api/history/get?user_id=${currentUser.id}&anime_id=${safeId}`);
                 const historyData = await historyRes.json();
                 
                 currentEpisodeNum = historyData.episode_num;
                 renderEpisodeCatalog(historyData.progress_seconds);
             } catch (err) {
                 grid.className = "grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 sm:gap-5 transition-all";
-                grid.innerHTML = `<div class="col-span-full text-error text-center py-10 text-xs font-bold">Failed parsing source metadata collection mappings.</div>`;
+                grid.innerHTML = `<div class="col-span-full text-error text-center py-10 text-xs font-bold">Failed to load content mapping from Extension.</div>`;
             }
         }
 
         function renderEpisodeCatalog(resumeSeconds = 0) {
-            document.getElementById('sectionTitle').innerText = "Index Catalog Deck";
+            document.getElementById('sectionTitle').innerText = "Select Volume";
             
             document.getElementById('headerActions').innerHTML = `
                 <button onclick="executeSearch()" class="btn btn-xs sm:btn-sm btn-outline btn-neutral rounded-lg flex items-center gap-1">
-                    <i class="fa-solid fa-chevron-left text-[10px]"></i> Deck
+                    <i class="fa-solid fa-chevron-left text-[10px]"></i> Go Back
                 </button>`;
                 
             const grid = document.getElementById('contentGrid');
             grid.innerHTML = `
                 <div class="flex items-center justify-between bg-base-200 p-3 rounded-xl border border-base-100 shadow-sm text-xs mb-3">
-                    <span class="font-medium text-neutral-content">Total Stream Volumes: <b class="text-white">${currentEpisodeList.length} Items</b></span>
+                    <span class="font-medium text-neutral-content">Total Stream Volumes: <b class="text-white">${currentEpisodeList.length}</b></span>
                 </div>`;
             
             const container = document.createElement('div');
@@ -281,8 +270,8 @@
             window.scrollTo({ top: 0, behavior: 'smooth' });
 
             try {
-                // Safely requesting stream links using query parameters instead of fragile path mappings
-                const res = await fetch(`${BACKEND_URL}/api/stream?episode_id=${encodeURIComponent(episodeId)}&provider=${activeProvider}`);
+                const safeEpId = encodeURIComponent(episodeId);
+                const res = await fetch(`${BACKEND_URL}/api/stream?episode_id=${safeEpId}`);
                 const data = await res.json();
                 
                 const source = data.sources.find(s => s.quality === "default") || data.sources.find(s => s.quality === "auto") || data.sources[0];
