@@ -2,6 +2,7 @@ import os
 import sqlite3
 import httpx
 import urllib.parse
+import re
 from contextlib import contextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import HTMLResponse
@@ -9,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # ==========================================
-# 1. SELF-HEALING DATABASE CONFIGURATION
+# 1. DATABASE CONFIGURATION
 # ==========================================
 DATABASE_URL = os.environ.get("DATABASE_URL", "subaru_activity.db")
 if DATABASE_URL.startswith("postgres://"):
@@ -127,10 +128,10 @@ def get_progress(user_id: str, anime_id: str):
     return {"episode_num": 1, "progress_seconds": 0.0}
 
 # ==========================================
-# 2. ANILIST GRAPHQL NATIVE SEARCH
+# 2. ANILIST GRAPHQL TRACKER
 # ==========================================
 async def search_anilist_graphql(query: str, client: httpx.AsyncClient):
-    """Uses official AniList API with strict SEARCH_MATCH sorting."""
+    """Uses official AniList API but exposes the Romaji title specifically for cross-referencing."""
     url = "https://graphql.anilist.co"
     graphql_query = """
     query ($search: String) {
@@ -153,13 +154,20 @@ async def search_anilist_graphql(query: str, client: httpx.AsyncClient):
             results = []
             for item in data.get("data", {}).get("Page", {}).get("media", []):
                 t = item.get("title", {})
-                title = t.get("english") or t.get("romaji") or t.get("userPreferred") or t.get("native") or "Unknown"
+                
+                # We use English for the UI display to look clean
+                display_title = t.get("english") or t.get("romaji") or t.get("userPreferred") or "Unknown"
+                
+                # We extract Romaji strictly for the Cross-Reference engine to match against Japanese domains
+                query_title = t.get("romaji") or t.get("english") or "Unknown"
+                
                 img = item.get("coverImage", {})
                 image = img.get("extraLarge") or img.get("large") or ""
                 
                 results.append({
                     "id": f"anilist|{item['id']}",
-                    "title": title,
+                    "title": display_title,
+                    "query_title": query_title,
                     "image": image,
                     "type": item.get("format", "TV"),
                     "status": item.get("status", "UNKNOWN"),
@@ -171,42 +179,54 @@ async def search_anilist_graphql(query: str, client: httpx.AsyncClient):
     return []
 
 # ==========================================
-# 3. MODERN META-API ROUTER
+# 3. ADVANCED CROSS-REFERENCE ROUTER
 # ==========================================
-class ModernMetaRouter:
-    """Uses advanced Open-Source aggregation APIs (Anify/AMVSTR) instead of scraping HTML."""
+class AdvancedRouter:
+    """Mirrors the Streamplay/Aniyomi Extension fallback architecture."""
     
-    async def get_info(self, composite_id: str):
+    async def get_info(self, composite_id: str, romaji_title: str):
         clean_id = composite_id.replace("anilist|", "")
         async with httpx.AsyncClient(timeout=15.0) as client:
             
-            # ATTEMPT 1: Anify API (The modern open-source gold standard)
+            # ATTEMPT 1: ID MAPPING VIA ANIFY (Fastest & Most Reliable)
             try:
                 res = await client.get(f"https://api.anify.tv/episodes/{clean_id}")
                 if res.status_code == 200:
                     data = res.json()
                     if isinstance(data, list) and len(data) > 0:
-                        # Prioritize Zoro/Vidstream, then fallback
-                        best_provider = next((p for p in data if p.get("providerId") in ["zoro", "gogoanime", "animepahe"]), data[0])
+                        best_provider = next((p for p in data if p.get("providerId") in ["zoro", "gogoanime"]), data[0])
                         provider_id = best_provider.get("providerId")
                         eps = best_provider.get("episodes", [])
-                        
-                        episodes = [{"id": f"anify|{provider_id}|{ep['id']}|{ep.get('number', 1)}", "number": ep.get('number', 1)} for ep in eps]
-                        return {"provider": f"Anify ({provider_id.upper()})", "episodes": episodes}
+                        if eps:
+                            episodes = [{"id": f"anify|{provider_id}|{ep['id']}|{ep.get('number', 1)}", "number": ep.get('number', 1)} for ep in eps]
+                            return {"provider": f"ID Map ({provider_id.upper()})", "episodes": episodes}
             except Exception:
                 pass
 
-            # ATTEMPT 2: AMVSTR (Highly reliable dedicated mapping API)
-            try:
-                res = await client.get(f"https://api.amvstr.me/api/v2/info/{clean_id}", timeout=10.0)
-                if res.status_code == 200:
-                    data = res.json()
-                    eps = data.get("episodes", [])
-                    if eps:
-                        episodes = [{"id": f"amvstr|{ep['id']}", "number": ep.get('number', 1)} for ep in eps]
-                        return {"provider": "AMVSTR NATIVE", "episodes": episodes}
-            except Exception:
-                pass
+            # ATTEMPT 2: HEURISTIC CROSS-REFERENCING (The Streamplay Method)
+            # If the ID map fails, we literally search the provider for the title.
+            if romaji_title:
+                # Remove special characters that break search queries
+                safe_title = re.sub(r'[^a-zA-Z0-9\s]', ' ', romaji_title).strip()
+                mirrors = ["https://api-consumet.vercel.app", "https://consumet-api.onrender.com"]
+                
+                for base in mirrors:
+                    try:
+                        # 1. Search Gogoanime manually
+                        s_res = await client.get(f"{base}/anime/gogoanime/{urllib.parse.quote(safe_title)}", timeout=8.0)
+                        if s_res.status_code == 200:
+                            s_data = s_res.json().get("results", [])
+                            if s_data:
+                                # 2. Grab the first result's ID and fetch episodes
+                                gogo_id = s_data[0]["id"]
+                                i_res = await client.get(f"{base}/anime/gogoanime/info/{gogo_id}", timeout=8.0)
+                                if i_res.status_code == 200:
+                                    eps = i_res.json().get("episodes", [])
+                                    if eps:
+                                        episodes = [{"id": f"consumet|gogoanime|{ep['id']}", "number": ep.get("number", 1)} for ep in eps]
+                                        return {"provider": "Cross-Ref (GOGO)", "episodes": episodes}
+                    except Exception:
+                        continue
 
         return {"episodes": [], "provider": "None"}
 
@@ -222,27 +242,26 @@ class ModernMetaRouter:
                 try:
                     url = f"https://api.anify.tv/sources?providerId={provider_id}&watchId={watch_id}&episodeNumber={ep_num}&id={anilist_id}&subType=sub"
                     res = await client.get(url)
-                    if res.status_code == 200:
-                        data = res.json()
-                        if data.get("sources"):
-                            return data
+                    if res.status_code == 200 and res.json().get("sources"):
+                        return res.json()
                 except Exception:
                     pass
                     
-            elif engine == "amvstr":
-                ep_id = urllib.parse.quote(parts[1], safe='')
-                try:
-                    res = await client.get(f"https://api.amvstr.me/api/v2/stream/{ep_id}")
-                    if res.status_code == 200:
-                        url = res.json().get("stream", {}).get("multi", {}).get("main", {}).get("url")
-                        if url:
-                            return {"sources": [{"url": url, "quality": "default"}]}
-                except Exception:
-                    pass
+            elif engine == "consumet":
+                provider = parts[1]
+                ep_id = urllib.parse.quote(parts[2], safe='')
+                mirrors = ["https://api-consumet.vercel.app", "https://consumet-api.onrender.com"]
+                for base in mirrors:
+                    try:
+                        res = await client.get(f"{base}/anime/{provider}/watch/{ep_id}")
+                        if res.status_code == 200 and res.json().get("sources"):
+                            return res.json()
+                    except Exception:
+                        continue
                     
-        raise HTTPException(status_code=502, detail="Stream resolution failed across all Meta-APIs.")
+        raise HTTPException(status_code=502, detail="Stream resolution failed across all pipelines.")
 
-router = ModernMetaRouter()
+router = AdvancedRouter()
 
 # ==========================================
 # 4. FASTAPI ROUTES
@@ -287,8 +306,8 @@ async def search_anime(q: str):
         return {"results": results}
 
 @app.get("/api/anime/{anime_id:path}")
-async def get_anime_details(anime_id: str):
-    return await router.get_info(anime_id)
+async def get_anime_details(anime_id: str, title: str = ""):
+    return await router.get_info(anime_id, title)
 
 @app.get("/api/stream")
 async def get_stream_urls(episode_id: str, anime_id: str = ""):
