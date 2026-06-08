@@ -2,7 +2,6 @@ import os
 import sqlite3
 import httpx
 import urllib.parse
-import re
 from contextlib import contextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import HTMLResponse
@@ -10,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # ==========================================
-# 1. DATABASE CONFIGURATION
+# 1. SELF-HEALING DATABASE CONFIGURATION
 # ==========================================
 DATABASE_URL = os.environ.get("DATABASE_URL", "subaru_activity.db")
 if DATABASE_URL.startswith("postgres://"):
@@ -128,109 +127,125 @@ def get_progress(user_id: str, anime_id: str):
     return {"episode_num": 1, "progress_seconds": 0.0}
 
 # ==========================================
-# 2. NATIVE PYTHON HTML SCRAPER (ANIYOMI STYLE)
+# 2. ANILIST GRAPHQL NATIVE SEARCH
 # ==========================================
-class NativeScraper:
-    """Bypasses APIs completely. Scrapes raw HTML using Regex just like open-source extensions."""
-    BASE_URL = "https://anitaku.pe"
-    AJAX_URL = "https://ajax.gogo-load.com/ajax"
-    
-    # We spoof a real browser to bypass basic Cloudflare checks on HTML pages
-    HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
-
-    async def search(self, query: str, client: httpx.AsyncClient):
-        url = f"{self.BASE_URL}/search.html?keyword={urllib.parse.quote(query)}"
-        try:
-            res = await client.get(url, headers=self.HEADERS, timeout=10.0)
-            # Regex to extract: ID, Title, Image
-            pattern = r'<div class="img">\s*<a href="/category/([^"]+)" title="([^"]+)">\s*<img src="([^"]+)"'
-            matches = re.findall(pattern, res.text)
-            
+async def search_anilist_graphql(query: str, client: httpx.AsyncClient):
+    """Uses official AniList API with strict SEARCH_MATCH sorting."""
+    url = "https://graphql.anilist.co"
+    graphql_query = """
+    query ($search: String) {
+      Page(page: 1, perPage: 30) {
+        media(search: $search, type: ANIME, sort: [SEARCH_MATCH, POPULARITY_DESC]) {
+          id
+          title { english romaji userPreferred native }
+          coverImage { extraLarge large }
+          format
+          status
+          averageScore
+        }
+      }
+    }
+    """
+    try:
+        res = await client.post(url, json={"query": graphql_query, "variables": {"search": query}}, timeout=10.0)
+        if res.status_code == 200:
+            data = res.json()
             results = []
-            for m in matches:
+            for item in data.get("data", {}).get("Page", {}).get("media", []):
+                t = item.get("title", {})
+                title = t.get("english") or t.get("romaji") or t.get("userPreferred") or t.get("native") or "Unknown"
+                img = item.get("coverImage", {})
+                image = img.get("extraLarge") or img.get("large") or ""
+                
                 results.append({
-                    "id": m[0],
-                    "title": m[1],
-                    "image": m[2],
-                    "type": "TV",
-                    "status": "Native Match"
+                    "id": f"anilist|{item['id']}",
+                    "title": title,
+                    "image": image,
+                    "type": item.get("format", "TV"),
+                    "status": item.get("status", "UNKNOWN"),
+                    "rating": item.get("averageScore", "")
                 })
             return results
-        except Exception as e:
-            print(f"[Scraper Error] Search: {e}")
-            return []
-
-    async def info(self, anime_id: str, client: httpx.AsyncClient):
-        url = f"{self.BASE_URL}/category/{anime_id}"
-        try:
-            res = await client.get(url, headers=self.HEADERS, timeout=10.0)
-            
-            # Step 1: Extract the hidden movie_id needed to request the episode list
-            movie_id_match = re.search(r'<input type="hidden" value="([^"]+)" id="movie_id"', res.text)
-            if not movie_id_match: 
-                return None
-            movie_id = movie_id_match.group(1)
-
-            # Step 2: Request the raw episode list HTML
-            ajax_url = f"{self.AJAX_URL}/load-list-episode?ep_start=0&ep_end=9999&id={movie_id}"
-            ajax_res = await client.get(ajax_url, headers=self.HEADERS, timeout=10.0)
-
-            # Step 3: Regex to extract Episode ID and Episode Number
-            ep_pattern = r'<a href="\s*/([^"]+)\s*"[^>]*ep_num="([0-9\.]+)"'
-            ep_matches = re.findall(ep_pattern, ajax_res.text)
-
-            episodes = []
-            for ep in ep_matches:
-                episodes.append({
-                    "id": ep[0].strip(),
-                    "number": float(ep[1])
-                })
-            
-            # Episodes load bottom-to-top, reverse the array
-            episodes.reverse()
-            return {"provider": "Native Engine (Anitaku)", "episodes": episodes}
-        except Exception as e:
-            print(f"[Scraper Error] Info: {e}")
-            return None
-
-    async def stream(self, episode_id: str, client: httpx.AsyncClient):
-        # ATTEMPT 1: Extract .m3u8 via API Proxies (Best for Discord WebSocket Sync)
-        apis = [
-            f"https://api-consumet.vercel.app/anime/gogoanime/watch/{episode_id}",
-            f"https://consumet-api.onrender.com/anime/gogoanime/watch/{episode_id}"
-        ]
-        for api in apis:
-            try:
-                r = await client.get(api, timeout=6.0)
-                if r.status_code == 200 and r.json().get("sources"):
-                    return r.json()
-            except Exception:
-                continue
-
-        # ATTEMPT 2: The Ultimate Fallback - Raw Iframe Extraction
-        # If the APIs fail to decrypt the video, we extract the raw streaming site embed link
-        # and tell the frontend to load it inside an iframe. It guarantees playback.
-        url = f"{self.BASE_URL}/{episode_id}"
-        try:
-            res = await client.get(url, headers=self.HEADERS, timeout=10.0)
-            iframe_match = re.search(r'<li class="anime">\s*<a href="#"[^>]*data-video="([^"]+)"', res.text)
-            
-            if iframe_match:
-                iframe_url = iframe_match.group(1)
-                if iframe_url.startswith("//"): 
-                    iframe_url = "https:" + iframe_url
-                
-                # Flag the payload so the frontend knows it must render an iframe, not a video player
-                return {"sources": [{"url": iframe_url, "quality": "iframe", "is_iframe": True}]}
-        except Exception as e:
-            print(f"[Scraper Error] Stream: {e}")
-
-        raise HTTPException(status_code=502, detail="Stream resolution failed across all extractors.")
-
-scraper = NativeScraper()
+    except Exception:
+        pass
+    return []
 
 # ==========================================
-# 3. FASTAPI ROUTES
+# 3. MODERN META-API ROUTER
+# ==========================================
+class ModernMetaRouter:
+    """Uses advanced Open-Source aggregation APIs (Anify/AMVSTR) instead of scraping HTML."""
+    
+    async def get_info(self, composite_id: str):
+        clean_id = composite_id.replace("anilist|", "")
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            
+            # ATTEMPT 1: Anify API (The modern open-source gold standard)
+            try:
+                res = await client.get(f"https://api.anify.tv/episodes/{clean_id}")
+                if res.status_code == 200:
+                    data = res.json()
+                    if isinstance(data, list) and len(data) > 0:
+                        # Prioritize Zoro/Vidstream, then fallback
+                        best_provider = next((p for p in data if p.get("providerId") in ["zoro", "gogoanime", "animepahe"]), data[0])
+                        provider_id = best_provider.get("providerId")
+                        eps = best_provider.get("episodes", [])
+                        
+                        episodes = [{"id": f"anify|{provider_id}|{ep['id']}|{ep.get('number', 1)}", "number": ep.get('number', 1)} for ep in eps]
+                        return {"provider": f"Anify ({provider_id.upper()})", "episodes": episodes}
+            except Exception:
+                pass
+
+            # ATTEMPT 2: AMVSTR (Highly reliable dedicated mapping API)
+            try:
+                res = await client.get(f"https://api.amvstr.me/api/v2/info/{clean_id}", timeout=10.0)
+                if res.status_code == 200:
+                    data = res.json()
+                    eps = data.get("episodes", [])
+                    if eps:
+                        episodes = [{"id": f"amvstr|{ep['id']}", "number": ep.get('number', 1)} for ep in eps]
+                        return {"provider": "AMVSTR NATIVE", "episodes": episodes}
+            except Exception:
+                pass
+
+        return {"episodes": [], "provider": "None"}
+
+    async def get_stream(self, composite_id: str, anilist_id: str = ""):
+        parts = composite_id.split("|")
+        engine = parts[0]
+        
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            if engine == "anify":
+                provider_id = parts[1]
+                watch_id = urllib.parse.quote(parts[2], safe='')
+                ep_num = parts[3]
+                try:
+                    url = f"https://api.anify.tv/sources?providerId={provider_id}&watchId={watch_id}&episodeNumber={ep_num}&id={anilist_id}&subType=sub"
+                    res = await client.get(url)
+                    if res.status_code == 200:
+                        data = res.json()
+                        if data.get("sources"):
+                            return data
+                except Exception:
+                    pass
+                    
+            elif engine == "amvstr":
+                ep_id = urllib.parse.quote(parts[1], safe='')
+                try:
+                    res = await client.get(f"https://api.amvstr.me/api/v2/stream/{ep_id}")
+                    if res.status_code == 200:
+                        url = res.json().get("stream", {}).get("multi", {}).get("main", {}).get("url")
+                        if url:
+                            return {"sources": [{"url": url, "quality": "default"}]}
+                except Exception:
+                    pass
+                    
+        raise HTTPException(status_code=502, detail="Stream resolution failed across all Meta-APIs.")
+
+router = ModernMetaRouter()
+
+# ==========================================
+# 4. FASTAPI ROUTES
 # ==========================================
 app = FastAPI(title="Streaming Activity Backend")
 
@@ -268,20 +283,16 @@ async def health_check():
 async def search_anime(q: str):
     if not q or q == "ping": return {"status": "active"}
     async with httpx.AsyncClient() as client:
-        results = await scraper.search(q, client)
+        results = await search_anilist_graphql(q, client)
         return {"results": results}
 
 @app.get("/api/anime/{anime_id:path}")
 async def get_anime_details(anime_id: str):
-    async with httpx.AsyncClient() as client:
-        data = await scraper.info(anime_id, client)
-        if data: return data
-        return {"episodes": [], "provider": "None"}
+    return await router.get_info(anime_id)
 
 @app.get("/api/stream")
-async def get_stream_urls(episode_id: str):
-    async with httpx.AsyncClient() as client:
-        return await scraper.stream(episode_id, client)
+async def get_stream_urls(episode_id: str, anime_id: str = ""):
+    return await router.get_stream(episode_id, anime_id)
 
 @app.post("/api/history/save")
 async def save_user_history(data: ProgressPayload):
@@ -293,7 +304,7 @@ async def get_user_history(user_id: str, anime_id: str):
     return get_progress(user_id, anime_id)
 
 # ==========================================
-# 4. WEBSOCKET SYNC
+# 5. WEBSOCKET SYNC
 # ==========================================
 class RoomManager:
     def __init__(self):
